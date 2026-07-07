@@ -33,6 +33,7 @@ type fakeCaller struct {
 	defaultCall      fakeResp
 	callMethodCalls  []any
 	sendSoapCalls    [][2]string
+	sendSoapHeaders  []string
 	blockUnsubscribe chan struct{}
 	blockAllSendSoap chan struct{}
 }
@@ -71,10 +72,12 @@ func (f *fakeCaller) CallMethod(m any) (*http.Response, error) {
 		r = f.callMethodResps[0]
 		f.callMethodResps = f.callMethodResps[1:]
 	}
-	if r.err != nil {
+	// Mirror networking.SendSoap*: a 4xx/5xx returns body alongside
+	// err. Tests opt into that shape by queueing body + err together.
+	if r.err != nil && r.body == "" {
 		return nil, r.err
 	}
-	return &http.Response{Body: io.NopCloser(strings.NewReader(r.body))}, nil
+	return &http.Response{Body: io.NopCloser(strings.NewReader(r.body))}, r.err
 }
 
 func (f *fakeCaller) SendSoap(endpoint, body string) (*http.Response, error) {
@@ -96,10 +99,20 @@ func (f *fakeCaller) SendSoap(endpoint, body string) (*http.Response, error) {
 		<-block
 	}
 
-	if r.err != nil {
+	if r.err != nil && r.body == "" {
 		return nil, r.err
 	}
-	return &http.Response{Body: io.NopCloser(strings.NewReader(r.body))}, nil
+	return &http.Response{Body: io.NopCloser(strings.NewReader(r.body))}, r.err
+}
+
+// SendSoapWithHeader delegates body+endpoint recording to SendSoap so
+// existing assertions on sendSoapCalls keep working, and records the
+// header XML in a parallel slice for ref-params wiring tests.
+func (f *fakeCaller) SendSoapWithHeader(endpoint, body, headerXML string) (*http.Response, error) {
+	f.mu.Lock()
+	f.sendSoapHeaders = append(f.sendSoapHeaders, headerXML)
+	f.mu.Unlock()
+	return f.SendSoap(endpoint, body)
 }
 
 func (f *fakeCaller) sendSoapCallCount() int {
@@ -112,6 +125,10 @@ func (f *fakeCaller) sendSoapCallCount() int {
 
 // createPullPointResp is the minimal SOAP envelope the lib's existing
 // xml.Decoder + getXMLNode path can extract a pull-point address from.
+// Intentionally omits <TerminationTime> so renewLoop falls back to
+// opts.InitialTermination — tests that drive renew timing depend on
+// that path. Tests that need the camera-granted termination capture
+// path use a dedicated fixture instead.
 const createPullPointResp = `<?xml version="1.0" encoding="UTF-8"?>
 <env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope"
               xmlns:wsa="http://www.w3.org/2005/08/addressing"
@@ -121,8 +138,6 @@ const createPullPointResp = `<?xml version="1.0" encoding="UTF-8"?>
       <tev:SubscriptionReference>
         <wsa:Address>http://camera.local/onvif/Events/PullSub_1</wsa:Address>
       </tev:SubscriptionReference>
-      <tev:CurrentTime>2026-05-21T10:30:00Z</tev:CurrentTime>
-      <tev:TerminationTime>2026-05-21T10:31:00Z</tev:TerminationTime>
     </tev:CreatePullPointSubscriptionResponse>
   </env:Body>
 </env:Envelope>`

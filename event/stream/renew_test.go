@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -167,4 +168,110 @@ func TestRenew_SendsAbsoluteDateTimeNotDuration(t *testing.T) {
 	// Absolute form is "YYYY-MM-DDTHH:MM:SSZ" not "PTnS".
 	assert.NotContains(t, renewBody, "PT", "Renew should not send relative duration; some firmwares reject it")
 	assert.Regexp(t, `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z`, renewBody, "Renew should send absolute RFC3339 UTC")
+}
+
+// --- Wiring: renew surfaces SOAP fault detail -------------------------
+
+func TestRenewPullPoint_EnrichesTransportErrWithFaultReason(t *testing.T) {
+	fc := newFakeCaller()
+	fc.queueSendSoap(renewFaultBody, errors.New("400 Bad Request"))
+	_, err := renewPullPoint(fc, subscriptionRef{Address: "http://camera/sub"}, defaultOptions())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "renew-specific complaint",
+		"renewPullPoint must enrich transport errors with the camera's SOAP fault")
+}
+
+const renewFaultBody = `<env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope">
+  <env:Body><env:Fault>
+    <env:Code><env:Value>env:Sender</env:Value></env:Code>
+    <env:Reason><env:Text xml:lang="en">renew-specific complaint</env:Text></env:Reason>
+  </env:Fault></env:Body>
+</env:Envelope>`
+
+func TestRenewPullPoint_EchoesRefParamsWithIsReferenceParameter(t *testing.T) {
+	ref := subscriptionRef{
+		Address:      "http://192.168.1.10/onvif/services",
+		RefParamsXML: `<wsa:ReferenceParameters xmlns:wsa="http://www.w3.org/2005/08/addressing"><dom0:SubscriptionId xmlns:dom0="http://www.axis.com/2009/event">297</dom0:SubscriptionId></wsa:ReferenceParameters>`,
+	}
+	fc := newFakeCaller()
+	_, err := renewPullPoint(fc, ref, defaultOptions())
+	require.NoError(t, err)
+	require.Len(t, fc.sendSoapHeaders, 1)
+	hdr := fc.sendSoapHeaders[0]
+	assert.Contains(t, hdr, "SubscriptionId")
+	assert.Contains(t, hdr, "297")
+	assert.Contains(t, hdr, `IsReferenceParameter="true"`)
+}
+
+// Regression: when GrantedTermination has just passed (renew failed
+// at or after the deadline), nextRenewInterval floors to one second
+// and the loop hammers the camera at 1 Hz until reconnect. Original
+// ticker design retried at the configured cadence regardless. After
+// a failure the loop must use a backoff decoupled from the stale
+// grant.
+func TestNextRenewIntervalAfterError_BacksOffAtLeastRetryBackoff(t *testing.T) {
+	opts := Options{RetryBackoff: time.Second}
+	got := nextRenewIntervalAfterError(opts)
+	assert.GreaterOrEqual(t, got, opts.RetryBackoff,
+		"failure path must back off at least RetryBackoff, not 1s floor on stale grant")
+}
+
+func TestNextRenewIntervalAfterError_DefaultsToOneSecondWhenRetryBackoffZero(t *testing.T) {
+	got := nextRenewIntervalAfterError(Options{})
+	assert.Equal(t, time.Second, got,
+		"zero RetryBackoff must yield the safety floor, not a tight 0-duration sleep")
+}
+
+// Lost-update race: renew snapshots the ref, the SOAP call returns,
+// and meanwhile attemptRecreate replaced pullPoint with a fresh
+// subscription. If renew blindly writes the OLD subscription's
+// granted time onto the NEW subscription, the new schedule is wrong.
+// Update must be conditioned on "same subscription as when I read."
+func TestUpdateGrantedTermination_DropsWriteWhenSubscriptionRotated(t *testing.T) {
+	// s.now is intentionally nil — this test does not exercise any
+	// time-dependent path; only the gen-counter accessors.
+	s := &Stream{}
+	original := subscriptionRef{Address: "http://camera/sub-A"}
+	s.setPullPoint(original)
+	gen := s.pullPointGen()
+
+	// Simulate recreate happening between snapshot and write.
+	s.setPullPoint(subscriptionRef{Address: "http://camera/sub-B"})
+
+	// Old generation's renew result must NOT overwrite sub-B's grant.
+	bogus := time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.updateGrantedTerminationIfGen(gen, bogus)
+
+	assert.True(t, s.getPullPoint().GrantedTermination.IsZero(),
+		"stale renew result must be discarded after a subscription rotation")
+}
+
+func TestUpdateGrantedTermination_AppliesWhenGenMatches(t *testing.T) {
+	// s.now is intentionally nil — gen-counter path only.
+	s := &Stream{}
+	s.setPullPoint(subscriptionRef{Address: "http://camera/sub"})
+	gen := s.pullPointGen()
+	t1 := time.Date(2026, 5, 27, 13, 0, 0, 0, time.UTC)
+	s.updateGrantedTerminationIfGen(gen, t1)
+	assert.Equal(t, t1, s.getPullPoint().GrantedTermination)
+}
+
+// renewLoop must capture (ref, gen) atomically. Two separate
+// getPullPoint() + pullPointGen() reads leave a window in which a
+// concurrent setPullPoint advances gen between the two reads — the
+// renew then runs against ref-N but believes its captured gen is N+1,
+// and updateGrantedTerminationIfGen("succeeds") writing the old
+// subscription's grant onto the new one. Single snapshot closes it.
+func TestSnapshotPullPoint_AtomicReadOfRefAndGen(t *testing.T) {
+	// s.now is intentionally nil — gen-counter path only.
+	s := &Stream{}
+	s.setPullPoint(subscriptionRef{Address: "A"}) // gen=1
+	ref, gen := s.snapshotPullPoint()
+	assert.Equal(t, "A", ref.Address)
+	assert.Equal(t, uint64(1), gen)
+
+	s.setPullPoint(subscriptionRef{Address: "B"}) // gen=2
+	ref, gen = s.snapshotPullPoint()
+	assert.Equal(t, "B", ref.Address)
+	assert.Equal(t, uint64(2), gen)
 }

@@ -333,30 +333,78 @@ func (dev *Device) GetEndpointByRequestStruct(requestStruct interface{}) (string
 	return resp, err
 }*/
 
-// CallMethod functions call an method, defined <method> struct with authentication data
+// SendSoap POSTs the given body wrapped in a SOAP envelope.
 func (dev Device) SendSoap(endpoint string, xmlRequestBody string) (*http.Response, error) {
+	return dev.SendSoapWithOptions(endpoint, xmlRequestBody)
+}
 
+// SendSoapWithHeader is SendSoap plus arbitrary inner-Header XML —
+// needed to echo WS-Addressing ReferenceParameters (with
+// wsa:IsReferenceParameter="true") back to vendors like AXIS that
+// identify pull-point subscriptions through them rather than the URL.
+//
+// xmlHeaderContent must be well-formed XML representing one or more
+// SOAP Header child elements (siblings are supported; the spec lets
+// each reference parameter be its own header block). Malformed or
+// element-free content errors before any request is made.
+//
+// SECURITY: do not pass content sourced from untrusted clients. The
+// API assumes the caller is authoritative for the envelope. Header
+// content forwards verbatim — among others, <wsse:Security> overrides
+// auth, <wsa:Action> overrides intent, <wsa:To>/<wsa:ReplyTo>/
+// <wsa:FaultTo> redirect responses, <wsa:MessageID> enables replay-
+// token forgery, and <wsu:Timestamp> bypasses freshness checks.
+func (dev Device) SendSoapWithHeader(endpoint, xmlRequestBody, xmlHeaderContent string) (*http.Response, error) {
+	return dev.SendSoapWithOptions(endpoint, xmlRequestBody, WithSOAPHeader(xmlHeaderContent))
+}
+
+// SendSoapOption tweaks a single SendSoapWithOptions call. New options
+// (per-call timeout, context, custom envelope namespaces, ...) should
+// be added as WithX constructors here rather than as new method
+// variants on Device.
+type SendSoapOption func(*soapConfig)
+
+type soapConfig struct {
+	headerContent string
+}
+
+// WithSOAPHeader adds inner-Header XML to the envelope. See
+// SendSoapWithHeader for the content contract.
+func WithSOAPHeader(headerContent string) SendSoapOption {
+	return func(c *soapConfig) { c.headerContent = headerContent }
+}
+
+// SendSoapWithOptions is the workhorse behind SendSoap and
+// SendSoapWithHeader; call it directly when you need to combine
+// options or pass options not surfaced by the convenience wrappers.
+func (dev Device) SendSoapWithOptions(endpoint, xmlRequestBody string, opts ...SendSoapOption) (*http.Response, error) {
+	var cfg soapConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 	soap := gosoap.NewEmptySOAP()
 	soap.AddStringBodyContent(xmlRequestBody)
 	soap.AddRootNamespaces(Xlmns)
 	soap.AddAction()
-
-	//Auth Handling
+	if cfg.headerContent != "" {
+		if err := soap.AddStringHeaderContents(cfg.headerContent); err != nil {
+			return nil, fmt.Errorf("add header content: %w", err)
+		}
+	}
 	if dev.params.Username != "" && dev.params.Password != "" {
 		soap.AddWSSecurity(dev.params.Username, dev.params.Password)
 	}
 
 	servResp, err := networking.SendSoap(dev.params.HttpClient, endpoint, soap.String())
 	if err != nil {
-		// Close server response body to reuse the connection
 		if servResp != nil {
 			servResp.Body.Close()
 		}
 		servResp, err = networking.SendSoapWithDigest(dev.params.HttpClient, endpoint, soap.String(), dev.params.Username, dev.params.Password)
 	}
-
 	return servResp, err
 }
+
 
 func createHttpRequest(httpMethod string, endpoint string, soap string) (req *http.Request, err error) {
 	req, err = http.NewRequest(httpMethod, endpoint, bytes.NewBufferString(soap))
@@ -388,7 +436,7 @@ func (dev *Device) CallOnvifFunction(serviceName, functionName string, data []by
 	}
 	xmlRequestBody := string(requestBody)
 
-	servResp, err := dev.SendSoap(endpoint, xmlRequestBody)
+	servResp, err := dev.SendSoapWithOptions(endpoint, xmlRequestBody)
 	if err != nil {
 		return nil, fmt.Errorf("fail to send the '%s' request for the web service '%s', %v", functionName, serviceName, err)
 	}

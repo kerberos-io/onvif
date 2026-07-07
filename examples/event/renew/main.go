@@ -84,7 +84,7 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	res, err := dev.SendSoap(endPoint, string(requestBody))
+	res, err := dev.SendSoapWithOptions(endPoint, string(requestBody))
 	if err != nil {
 		log.Fatalln("fail to CallMethod:", err)
 	}

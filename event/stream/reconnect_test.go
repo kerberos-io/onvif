@@ -13,7 +13,9 @@ import (
 
 // createPullPointRespAlt mirrors the first fixture but returns a
 // different SubscriptionReference Address so a test can prove that
-// subsequent pulls hit the recreated endpoint.
+// subsequent pulls hit the recreated endpoint. Like createPullPointResp,
+// it intentionally omits <TerminationTime> so renew scheduling stays
+// driven by opts.
 const createPullPointRespAlt = `<?xml version="1.0" encoding="UTF-8"?>
 <env:Envelope xmlns:env="http://www.w3.org/2003/05/soap-envelope"
               xmlns:wsa="http://www.w3.org/2005/08/addressing"
@@ -23,8 +25,6 @@ const createPullPointRespAlt = `<?xml version="1.0" encoding="UTF-8"?>
       <tev:SubscriptionReference>
         <wsa:Address>http://camera.local/onvif/Events/PullSub_2</wsa:Address>
       </tev:SubscriptionReference>
-      <tev:CurrentTime>2026-05-21T10:30:10Z</tev:CurrentTime>
-      <tev:TerminationTime>2026-05-21T10:31:10Z</tev:TerminationTime>
     </tev:CreatePullPointSubscriptionResponse>
   </env:Body>
 </env:Envelope>`

@@ -11,6 +11,7 @@ require (
 	github.com/icholy/digest v0.1.23
 	github.com/juju/errors v1.0.0
 	github.com/stretchr/testify v1.8.4
+	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.19.0
 )
 

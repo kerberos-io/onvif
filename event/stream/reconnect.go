@@ -74,7 +74,7 @@ func (s *Stream) pullLoop(ctx context.Context) {
 // attemptRecreate returns (justRecreated, cont). cont is false only
 // when ctx cancelled during backoff so the caller exits the loop.
 func (s *Stream) attemptRecreate(ctx context.Context, failures *int, backoff *time.Duration) (justRecreated, cont bool) {
-	addr, err := createPullPoint(s.caller, s.opts)
+	ref, err := createPullPoint(s.caller, s.opts)
 	if err != nil {
 		s.surfaceError(ErrRecreateFailed{Err: err})
 		if !sleepCtx(ctx, jitter(*backoff)) {
@@ -86,7 +86,7 @@ func (s *Stream) attemptRecreate(ctx context.Context, failures *int, backoff *ti
 		}
 		return false, true
 	}
-	s.setPullPoint(addr)
+	s.setPullPoint(ref)
 	*failures = 0
 	*backoff = s.opts.RetryBackoff
 	return true, true
