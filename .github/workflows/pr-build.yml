@@ -1,0 +1,51 @@
+name: Pull Request Build
+
+# Builds, vets and tests the Go library on every pull request.
+# This repository is a Go library (no Dockerfile), so unlike the Docker-oriented
+# uug-ai/workflows pr-build.yml it validates the module directly instead of
+# building and pushing a container image.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & Test (Go)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          check-latest: true
+          cache-dependency-path: go.sum
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Vet (non-blocking)
+        continue-on-error: true
+        run: go vet ./...
+
+      - name: Gofmt check (non-blocking)
+        continue-on-error: true
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Test
+        # ws-discovery/TestDevicesFromProbeResponses is a network-dependent
+        # integration test that probes real ONVIF cameras on the LAN, so it
+        # cannot pass on hosted runners. Run it locally against real devices.
+        run: go test $(go list ./... | grep -v '/ws-discovery')
