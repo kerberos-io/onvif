@@ -86,6 +86,7 @@ type DeviceParams struct {
 	Username   string
 	Password   string
 	HttpClient *http.Client
+	AuthMode   string
 }
 
 // GetServices return available endpoints
@@ -283,10 +284,56 @@ func (dev Device) callMethodDo(endpoint string, method interface{}) (*http.Respo
 	soap.AddRootNamespaces(Xlmns)
 	soap.AddAction()
 
-	//Auth Handling
-	if dev.params.Username != "" && dev.params.Password != "" {
-		soap.AddWSSecurity(dev.params.Username, dev.params.Password)
-	}
+	return dev.sendSOAP(endpoint, soap)
+}
 
-	return networking.SendSoap(dev.params.HttpClient, endpoint, soap.String())
+// Authentication modes selectable through DeviceParams.AuthMode.
+const (
+	// NoAuth disables authentication entirely.
+	NoAuth = "none"
+	// DigestAuth uses HTTP digest only, without a WS-Security header.
+	DigestAuth = "digest"
+	// UsernameTokenAuth uses a WS-Security UsernameToken header only and never
+	// falls back to HTTP digest.
+	UsernameTokenAuth = "usernametoken"
+	// Both adds a WS-Security header (when credentials exist) and additionally
+	// answers an HTTP digest challenge if the device requests one.
+	Both = "both"
+)
+
+// sendSOAP dispatches an assembled SOAP message to the endpoint using the
+// authentication mechanism selected through DeviceParams.AuthMode.
+//
+// Behaviour per AuthMode:
+//   - NoAuth ("none"):            no authentication is added.
+//   - UsernameTokenAuth:          WS-Security UsernameToken only; never falls
+//     back to HTTP digest, which keeps cameras that authenticate exclusively
+//     through WS-Security working.
+//   - DigestAuth ("digest"):      HTTP digest only; no WS-Security header.
+//   - Both ("both") / unset (""): WS-Security credentials are added (when
+//     available) and HTTP digest is attempted only if the device answers with
+//     an authentication challenge (HTTP 401 Unauthorized). The WS-Security
+//     header is never stripped.
+func (dev Device) sendSOAP(endpoint string, soap gosoap.SoapMessage) (*http.Response, error) {
+	hasCredentials := dev.params.Username != "" || dev.params.Password != ""
+
+	switch dev.params.AuthMode {
+	case NoAuth:
+		return networking.SendSoap(dev.params.HttpClient, endpoint, soap.String())
+
+	case UsernameTokenAuth:
+		if hasCredentials {
+			soap.AddWSSecurity(dev.params.Username, dev.params.Password)
+		}
+		return networking.SendSoap(dev.params.HttpClient, endpoint, soap.String())
+
+	case DigestAuth:
+		return networking.SendSoapWithDigest(dev.params.HttpClient, endpoint, soap.String(), dev.params.Username, dev.params.Password)
+
+	default: // Both and the empty/unset default.
+		if hasCredentials {
+			soap.AddWSSecurity(dev.params.Username, dev.params.Password)
+		}
+		return networking.SendSoapWithDigest(dev.params.HttpClient, endpoint, soap.String(), dev.params.Username, dev.params.Password)
+	}
 }
