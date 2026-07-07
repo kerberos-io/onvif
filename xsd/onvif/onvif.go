@@ -1176,7 +1176,7 @@ type PresetTour struct {
 	Status            PTZPresetTourStatus            `xml:"Status"`
 	AutoStart         xsd.Boolean                    `xml:"AutoStart"`
 	StartingCondition PTZPresetTourStartingCondition `xml:"StartingCondition"`
-	TourSpot          PTZPresetTourSpot              `xml:"TourSpot"`
+	TourSpot          []PTZPresetTourSpot           	 `xml:"TourSpot"`
 	Extension         PTZPresetTourExtension         `xml:"Extension"`
 }
 
