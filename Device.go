@@ -280,21 +280,45 @@ func (dev Device) callMethodDo(endpoint string, method interface{}) (*http.Respo
 	soap.AddRootNamespaces(Xlmns)
 	soap.AddAction()
 
-	//Auth Handling
-	if dev.params.Username != "" && dev.params.Password != "" {
-		soap.AddWSSecurity(dev.params.Username, dev.params.Password)
-	}
+	return dev.sendSOAP(endpoint, soap)
+}
 
-	servResp, err := networking.SendSoap(dev.params.HttpClient, endpoint, soap.String())
-	if err != nil {
-		// Close server response body to reuse the connection
-		if servResp != nil {
-			servResp.Body.Close()
+// sendSOAP dispatches an assembled SOAP message to the endpoint using the
+// authentication mechanism selected through DeviceParams.AuthMode.
+//
+// Behaviour per AuthMode:
+//   - NoAuth ("none"):            no authentication is added.
+//   - UsernameTokenAuth:          WS-Security UsernameToken only; never falls
+//     back to HTTP digest, which keeps cameras that authenticate exclusively
+//     through WS-Security working.
+//   - DigestAuth ("digest"):      HTTP digest only; no WS-Security header.
+//   - Both ("both") / unset (""): WS-Security credentials are added (when
+//     available) and HTTP digest is attempted only if the device answers with
+//     an authentication challenge (HTTP 401 Unauthorized). On that digest
+//     retry the WS-Security header is dropped so the credentials are not sent
+//     twice.
+func (dev Device) sendSOAP(endpoint string, soap gosoap.SoapMessage) (*http.Response, error) {
+	hasCredentials := dev.params.Username != "" || dev.params.Password != ""
+
+	switch dev.params.AuthMode {
+	case NoAuth:
+		return networking.SendSoap(dev.params.HttpClient, endpoint, soap.String())
+
+	case UsernameTokenAuth:
+		if hasCredentials {
+			soap.AddWSSecurity(dev.params.Username, dev.params.Password)
 		}
-		servResp, err = networking.SendSoapWithDigest(dev.params.HttpClient, endpoint, soap.String(), dev.params.Username, dev.params.Password)
-	}
+		return networking.SendSoap(dev.params.HttpClient, endpoint, soap.String())
 
-	return servResp, err
+	case DigestAuth:
+		return networking.SendSoapWithDigest(dev.params.HttpClient, endpoint, soap.String(), dev.params.Username, dev.params.Password)
+
+	default: // Both and the empty/unset default.
+		if hasCredentials {
+			soap.AddWSSecurity(dev.params.Username, dev.params.Password)
+		}
+		return networking.SendSoapWithDigest(dev.params.HttpClient, endpoint, soap.String(), dev.params.Username, dev.params.Password)
+	}
 }
 
 func (dev *Device) GetDeviceParams() DeviceParams {
@@ -404,7 +428,6 @@ func (dev Device) SendSoapWithOptions(endpoint, xmlRequestBody string, opts ...S
 	}
 	return servResp, err
 }
-
 
 func createHttpRequest(httpMethod string, endpoint string, soap string) (req *http.Request, err error) {
 	req, err = http.NewRequest(httpMethod, endpoint, bytes.NewBufferString(soap))

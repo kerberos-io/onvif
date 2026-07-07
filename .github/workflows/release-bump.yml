@@ -1,0 +1,28 @@
+name: Bump release
+
+# Manually bump the semantic version: determines the next tag from the latest
+# v* tag, creates a GitHub release with generated notes and exposes the new tag.
+# Thin wrapper around the reusable uug-ai/workflows release-bump workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which part of the version to bump"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+
+permissions:
+  contents: write
+
+jobs:
+  bump-release:
+    uses: uug-ai/workflows/.github/workflows/release-bump.yml@main
+    with:
+      bump: ${{ github.event.inputs.bump }}
+    secrets: inherit
