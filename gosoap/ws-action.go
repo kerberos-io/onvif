@@ -36,7 +36,7 @@ func NewAction(key, value string) Action {
 	/** Generating Nonce sequence **/
 	auth := Action{
 
-	//	Created: time.Now().UTC().Format(time.RFC3339Nano),
+		//	Created: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
 	return auth

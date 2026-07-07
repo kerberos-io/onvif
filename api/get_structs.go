@@ -3,9 +3,9 @@ package api
 import (
 	"errors"
 
-	"github.com/use-go/onvif/device"
-	"github.com/use-go/onvif/media"
-	"github.com/use-go/onvif/ptz"
+	"github.com/kerberos-io/onvif/device"
+	"github.com/kerberos-io/onvif/media"
+	"github.com/kerberos-io/onvif/ptz"
 )
 
 func getPTZStructByName(name string) (interface{}, error) {
@@ -201,6 +201,8 @@ func getDeviceStructByName(name string) (interface{}, error) {
 		return &device.SetClientCertificateMode{}, nil
 	case "GetRelayOutputs":
 		return &device.GetRelayOutputs{}, nil
+	case "GetDigitalInputs":
+		return &device.GetDigitalInputs{}, nil
 	case "SetRelayOutputSettings":
 		return &device.SetRelayOutputSettings{}, nil
 	case "SetRelayOutputState":

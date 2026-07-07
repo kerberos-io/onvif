@@ -1,8 +1,11 @@
 package onvif
 
 import (
+	"bytes"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -10,11 +13,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kerberos-io/onvif/networking"
+	"github.com/kerberos-io/onvif/xsd/onvif"
+
 	"github.com/beevik/etree"
-	"github.com/use-go/onvif/device"
-	"github.com/use-go/onvif/gosoap"
-	"github.com/use-go/onvif/networking"
-	wsdiscovery "github.com/use-go/onvif/ws-discovery"
+	"github.com/kerberos-io/onvif/device"
+	"github.com/kerberos-io/onvif/gosoap"
 )
 
 // Xlmns XML Scheam
@@ -22,6 +26,7 @@ var Xlmns = map[string]string{
 	"onvif":   "http://www.onvif.org/ver10/schema",
 	"tds":     "http://www.onvif.org/ver10/device/wsdl",
 	"trt":     "http://www.onvif.org/ver10/media/wsdl",
+	"tr2":     "http://www.onvif.org/ver20/media/wsdl",
 	"tev":     "http://www.onvif.org/ver10/events/wsdl",
 	"tptz":    "http://www.onvif.org/ver20/ptz/wsdl",
 	"timg":    "http://www.onvif.org/ver20/imaging/wsdl",
@@ -34,6 +39,9 @@ var Xlmns = map[string]string{
 	"wsntw":   "http://docs.oasis-open.org/wsn/bw-2",
 	"wsrf-rw": "http://docs.oasis-open.org/wsrf/rw-2",
 	"wsaw":    "http://www.w3.org/2006/05/addressing/wsdl",
+	"tt":      "http://www.onvif.org/ver10/recording/wsdl",
+	"wsse":    "http://docs.oasis-open.org/wss/2004/01/oasis-200401",
+	"wsu":     "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd",
 }
 
 // DeviceType alias for int
@@ -45,6 +53,8 @@ const (
 	NVS
 	NVA
 	NVT
+
+	ContentType = "Content-Type"
 )
 
 func (devType DeviceType) String() string {
@@ -65,6 +75,7 @@ func (devType DeviceType) String() string {
 
 // DeviceInfo struct contains general information about ONVIF device
 type DeviceInfo struct {
+	Name            string
 	Manufacturer    string
 	Model           string
 	FirmwareVersion string
@@ -76,9 +87,10 @@ type DeviceInfo struct {
 // struct represents an abstract ONVIF device.
 // It contains methods, which helps to communicate with ONVIF device
 type Device struct {
-	params    DeviceParams
-	endpoints map[string]string
-	info      DeviceInfo
+	params       DeviceParams
+	endpoints    map[string]string
+	info         DeviceInfo
+	digestClient *DigestClient
 }
 
 type DeviceParams struct {
@@ -120,58 +132,48 @@ func GetAvailableDevicesAtSpecificEthernetInterface(interfaceName string) ([]Dev
 		return nil, err
 	}
 
-	nvtDevicesSeen := make(map[string]bool)
-	nvtDevices := make([]Device, 0)
-
-	for _, j := range devices {
-		doc := etree.NewDocument()
-		if err := doc.ReadFromString(j); err != nil {
-			return nil, err
-		}
-
-		for _, xaddr := range doc.Root().FindElements("./Body/ProbeMatches/ProbeMatch/XAddrs") {
-			xaddr := strings.Split(strings.Split(xaddr.Text(), " ")[0], "/")[2]
-			if !nvtDevicesSeen[xaddr] {
-				dev, err := NewDevice(DeviceParams{Xaddr: strings.Split(xaddr, " ")[0]})
+	for _, s := range scopes {
+		for _, supp := range supportedScopes {
+			fullScope := fmt.Sprintf("onvif://www.onvif.org/%s/", supp.category)
+			scopeValue, matchesScope := strings.CutPrefix(s, fullScope)
+			if matchesScope {
+				unescaped, err := url.QueryUnescape(scopeValue)
 				if err != nil {
-					// TODO(jfsmig) print a warning
-				} else {
-					nvtDevicesSeen[xaddr] = true
-					nvtDevices = append(nvtDevices, *dev)
+					continue
 				}
+				supp.setField(unescaped)
 			}
 		}
 	}
-
-	return nvtDevices, nil
+	dev.info = newInfo
 }
 
-func (dev *Device) getSupportedServices(resp *http.Response) error {
+func readResponse(resp *http.Response) string {
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+func (dev *Device) getSupportedServices(resp *http.Response) {
 	doc := etree.NewDocument()
 
-	data, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-
-	resp.Body.Close()
+	data, _ := ioutil.ReadAll(resp.Body)
 
 	if err := doc.ReadFromBytes(data); err != nil {
 		//log.Println(err.Error())
-		return err
+		return
 	}
-
 	services := doc.FindElements("./Envelope/Body/GetCapabilitiesResponse/Capabilities/*/XAddr")
 	for _, j := range services {
 		dev.addEndpoint(j.Parent().Tag, j.Text())
 	}
 
-	extension_services := doc.FindElements("./Envelope/Body/GetCapabilitiesResponse/Capabilities/Extension/*/XAddr")
-	for _, j := range extension_services {
+	extensionServices := doc.FindElements("./Envelope/Body/GetCapabilitiesResponse/Capabilities/Extension/*/XAddr")
+	for _, j := range extensionServices {
 		dev.addEndpoint(j.Parent().Tag, j.Text())
 	}
-
-	return nil
 }
 
 // NewDevice function construct a ONVIF Device entity
@@ -184,8 +186,9 @@ func NewDevice(params DeviceParams) (*Device, error) {
 	if dev.params.HttpClient == nil {
 		dev.params.HttpClient = new(http.Client)
 	}
+	dev.digestClient = NewDigestClient(dev.params.HttpClient, dev.params.Username, dev.params.Password)
 
-	getCapabilities := device.GetCapabilities{Category: "All"}
+	getCapabilities := device.GetCapabilities{Category: []onvif.CapabilityCategory{"All"}}
 
 	resp, err := dev.CallMethod(getCapabilities)
 
@@ -193,11 +196,7 @@ func NewDevice(params DeviceParams) (*Device, error) {
 		return nil, errors.New("camera is not available at " + dev.params.Xaddr + " or it does not support ONVIF services")
 	}
 
-	err = dev.getSupportedServices(resp)
-	if err != nil {
-		return nil, err
-	}
-
+	dev.getSupportedServices(resp)
 	return dev, nil
 }
 
@@ -213,6 +212,11 @@ func (dev *Device) addEndpoint(Key, Value string) {
 	}
 
 	dev.endpoints[lowCaseKey] = Value
+
+	if lowCaseKey == strings.ToLower(MediaWebService) {
+		// Media2 uses the same endpoint but different XML name space
+		dev.endpoints[strings.ToLower(Media2WebService)] = Value
+	}
 }
 
 // GetEndpoint returns specific ONVIF service endpoint address
@@ -220,7 +224,7 @@ func (dev *Device) GetEndpoint(name string) string {
 	return dev.endpoints[name]
 }
 
-func (dev Device) buildMethodSOAP(msg string) (gosoap.SoapMessage, error) {
+func (dev *Device) buildMethodSOAP(msg string) (gosoap.SoapMessage, error) {
 	doc := etree.NewDocument()
 	if err := doc.ReadFromString(msg); err != nil {
 		//log.Println("Got error")

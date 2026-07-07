@@ -1,8 +1,10 @@
 package media
 
+//go:generate python3 ../python/gen_commands.py
+
 import (
-	"github.com/use-go/onvif/xsd"
-	"github.com/use-go/onvif/xsd/onvif"
+	"github.com/kerberos-io/onvif/xsd"
+	"github.com/kerberos-io/onvif/xsd/onvif"
 )
 
 type Capabilities struct {
@@ -72,6 +74,8 @@ type CreateProfileResponse struct {
 	Profile onvif.Profile
 }
 
+// GetProfile and its properties are defined in the Onvif specification:
+// https://www.onvif.org/ver10/media/wsdl/media.wsdl#op.GetProfile
 type GetProfile struct {
 	XMLName      string               `xml:"trt:GetProfile"`
 	ProfileToken onvif.ReferenceToken `xml:"trt:ProfileToken"`
@@ -290,6 +294,8 @@ type GetVideoAnalyticsConfigurationsResponse struct {
 	Configurations onvif.VideoAnalyticsConfiguration
 }
 
+// GetMetadataConfigurations and its properties are defined in the Onvif specification:
+// https://www.onvif.org/ver10/media/wsdl/media.wsdl#op.GetMetadataConfigurations
 type GetMetadataConfigurations struct {
 	XMLName string `xml:"trt:GetMetadataConfigurations"`
 }
@@ -323,6 +329,8 @@ type GetVideoSourceConfigurationResponse struct {
 	Configuration onvif.VideoSourceConfiguration
 }
 
+// GetVideoEncoderConfiguration and its properties are defined in the Onvif specification:
+// https://www.onvif.org/ver10/media/wsdl/media.wsdl#op.GetVideoEncoderConfiguration
 type GetVideoEncoderConfiguration struct {
 	XMLName            string               `xml:"trt:GetVideoEncoderConfiguration"`
 	ConfigurationToken onvif.ReferenceToken `xml:"trt:ConfigurationToken"`
@@ -359,6 +367,8 @@ type GetVideoAnalyticsConfigurationResponse struct {
 	Configuration onvif.VideoAnalyticsConfiguration
 }
 
+// GetMetadataConfiguration and its properties are defined in the Onvif specification:
+// https://www.onvif.org/ver10/media/wsdl/media.wsdl#op.GetMetadataConfiguration
 type GetMetadataConfiguration struct {
 	XMLName            string               `xml:"trt:GetMetadataConfiguration"`
 	ConfigurationToken onvif.ReferenceToken `xml:"trt:ConfigurationToken"`
@@ -431,6 +441,8 @@ type GetCompatibleVideoAnalyticsConfigurationsResponse struct {
 	Configurations onvif.VideoAnalyticsConfiguration
 }
 
+// GetCompatibleMetadataConfigurations and its properties are defined in the Onvif specification:
+// https://www.onvif.org/ver10/media/wsdl/media.wsdl#op.GetCompatibleMetadataConfigurations
 type GetCompatibleMetadataConfigurations struct {
 	XMLName      string               `xml:"trt:GetCompatibleMetadataConfigurations"`
 	ProfileToken onvif.ReferenceToken `xml:"trt:ProfileToken"`
@@ -468,9 +480,9 @@ type SetVideoSourceConfigurationResponse struct {
 }
 
 type SetVideoEncoderConfiguration struct {
-	XMLName          string                          `xml:"trt:SetVideoEncoderConfiguration"`
-	Configuration    onvif.VideoEncoderConfiguration `xml:"trt:Configuration"`
-	ForcePersistence xsd.Boolean                     `xml:"trt:ForcePersistence"`
+	XMLName          string                                  `xml:"trt:SetVideoEncoderConfiguration"`
+	Configuration    *onvif.VideoEncoderConfigurationRequest `xml:"trt:Configuration,omitempty"`
+	ForcePersistence *xsd.Boolean                            `xml:"trt:ForcePersistence,omitempty"`
 }
 
 type SetVideoEncoderConfigurationResponse struct {
@@ -503,10 +515,12 @@ type SetVideoAnalyticsConfiguration struct {
 type SetVideoAnalyticsConfigurationResponse struct {
 }
 
+// SetMetadataConfiguration and its properties are defined in the Onvif specification:
+// https://www.onvif.org/ver10/media/wsdl/media.wsdl#op.SetMetadataConfiguration
 type SetMetadataConfiguration struct {
-	XMLName          string                      `xml:"trt:GetDeviceInformation"`
-	Configuration    onvif.MetadataConfiguration `xml:"trt:Configuration"`
-	ForcePersistence xsd.Boolean                 `xml:"trt:ForcePersistence"`
+	XMLName          string                             `xml:"trt:SetMetadataConfiguration"`
+	Configuration    onvif.MetadataConfigurationRequest `xml:"trt:Configuration"`
+	ForcePersistence xsd.Boolean                        `xml:"trt:ForcePersistence"`
 }
 
 type SetMetadataConfigurationResponse struct {
@@ -540,6 +554,8 @@ type GetVideoSourceConfigurationOptionsResponse struct {
 	Options onvif.VideoSourceConfigurationOptions
 }
 
+// GetVideoEncoderConfigurationOptions and its properties are defined in the Onvif specification:
+// https://www.onvif.org/ver10/media/wsdl/media.wsdl#op.GetVideoEncoderConfigurationOptions
 type GetVideoEncoderConfigurationOptions struct {
 	XMLName            string               `xml:"trt:GetVideoEncoderConfigurationOptions"`
 	ProfileToken       onvif.ReferenceToken `xml:"trt:ProfileToken"`
@@ -612,10 +628,12 @@ type GetGuaranteedNumberOfVideoEncoderInstancesResponse struct {
 	MPEG4       int
 }
 
+// GetStreamUri and its properties are defined in the Onvif specification:
+// https://www.onvif.org/ver10/media/wsdl/media.wsdl#op.GetStreamUri
 type GetStreamUri struct {
-	XMLName      string               `xml:"trt:GetStreamUri"`
-	StreamSetup  onvif.StreamSetup    `xml:"trt:StreamSetup"`
-	ProfileToken onvif.ReferenceToken `xml:"trt:ProfileToken"`
+	XMLName      string                `xml:"trt:GetStreamUri"`
+	StreamSetup  *onvif.StreamSetup    `xml:"trt:StreamSetup"`
+	ProfileToken *onvif.ReferenceToken `xml:"trt:ProfileToken"`
 }
 
 type GetStreamUriResponse struct {

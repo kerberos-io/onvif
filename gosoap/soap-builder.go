@@ -2,6 +2,7 @@ package gosoap
 
 import (
 	"encoding/xml"
+	"errors"
 	"log"
 
 	"github.com/beevik/etree"
@@ -81,7 +82,9 @@ func (msg *SoapMessage) AddStringBodyContent(data string) {
 	}
 	//doc.FindElement("./Envelope/Body").AddChild(element)
 	bodyTag := doc.Root().SelectElement("Body")
-	bodyTag.AddChild(element)
+	if element != nil {
+		bodyTag.AddChild(element)
+	}
 
 	//doc.IndentTabs()
 	res, _ := doc.WriteToString()
@@ -126,7 +129,13 @@ func (msg *SoapMessage) AddBodyContents(elements []*etree.Element) {
 	*msg = SoapMessage(res)
 }
 
-//AddStringHeaderContent for Envelope body
+// AddStringHeaderContent appends a single root element to the SOAP
+// Header. Use AddStringHeaderContents (plural) when the content
+// contains multiple sibling elements — for example WS-Addressing
+// reference parameters, which the spec requires as separate header
+// blocks. The two coexist for backwards compatibility: external
+// consumers of this library may rely on AddStringHeaderContent's
+// single-root constraint and the matching error on multi-root input.
 func (msg *SoapMessage) AddStringHeaderContent(data string) error {
 	doc := etree.NewDocument()
 
@@ -151,6 +160,44 @@ func (msg *SoapMessage) AddStringHeaderContent(data string) error {
 
 	*msg = SoapMessage(res)
 
+	return nil
+}
+
+// AddStringHeaderContents is the multi-root variant of
+// AddStringHeaderContent: it accepts any number of top-level sibling
+// elements (zero is an error) and appends each as its own SOAP Header
+// child. Needed because WS-Addressing 1.0 SOAP Binding §3.4 requires each
+// reference parameter to be a separate Header block, but a Go XML
+// document only has one root. Comments and text outside elements are
+// silently dropped.
+//
+// SECURITY: data forwards verbatim into the outbound envelope. Do not
+// pass content sourced from untrusted clients — see the same caveat
+// on onvif.Device.SendSoapWithOptions / SendSoapWithHeader.
+func (msg *SoapMessage) AddStringHeaderContents(data string) error {
+	in := etree.NewDocument()
+	if err := in.ReadFromString("<wrap>" + data + "</wrap>"); err != nil {
+		return err
+	}
+	wrap := in.SelectElement("wrap")
+	if wrap == nil {
+		return errors.New("AddStringHeaderContents: missing wrap root")
+	}
+	children := wrap.ChildElements()
+	if len(children) == 0 {
+		return errors.New("AddStringHeaderContents: no element children in content")
+	}
+
+	doc := etree.NewDocument()
+	if err := doc.ReadFromString(msg.String()); err != nil {
+		return err
+	}
+	header := doc.Root().SelectElement("Header")
+	for _, child := range children {
+		header.AddChild(child.Copy())
+	}
+	res, _ := doc.WriteToString()
+	*msg = SoapMessage(res)
 	return nil
 }
 

@@ -1,15 +1,15 @@
 package main
 
 import (
-	"context"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 
-	goonvif "github.com/use-go/onvif"
-	"github.com/use-go/onvif/device"
-	sdk "github.com/use-go/onvif/sdk/device"
-	"github.com/use-go/onvif/xsd/onvif"
+	goonvif "github.com/kerberos-io/onvif"
+	"github.com/kerberos-io/onvif/device"
+	"github.com/kerberos-io/onvif/gosoap"
+	"github.com/kerberos-io/onvif/xsd/onvif"
 )
 
 const (
@@ -17,9 +17,15 @@ const (
 	password = "Supervisor"
 )
 
-func main() {
-	ctx := context.Background()
+func readResponse(resp *http.Response) string {
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
 
+func main() {
 	//Getting an camera instance
 	dev, err := goonvif.NewDevice(goonvif.DeviceParams{
 		Xaddr:      "192.168.13.14:80",
@@ -32,36 +38,40 @@ func main() {
 	}
 
 	//Preparing commands
+	UserLevel := onvif.UserLevel("User")
 	systemDateAndTyme := device.GetSystemDateAndTime{}
-	getCapabilities := device.GetCapabilities{Category: "All"}
 	createUser := device.CreateUsers{
-		User: onvif.User{
-			Username:  "TestUser",
-			Password:  "TestPassword",
-			UserLevel: "User",
+		User: []onvif.UserRequest{
+			{
+				Username:  "TestUser",
+				Password:  "TestPassword",
+				UserLevel: &UserLevel,
+			},
 		},
 	}
 
 	//Commands execution
-	systemDateAndTymeResponse, err := sdk.Call_GetSystemDateAndTime(ctx, dev, systemDateAndTyme)
+	systemDateAndTymeResponse, err := dev.CallMethod(systemDateAndTyme)
 	if err != nil {
 		log.Println(err)
 	} else {
-		fmt.Println(systemDateAndTymeResponse)
+		fmt.Println(readResponse(systemDateAndTymeResponse))
 	}
-	getCapabilitiesResponse, err := sdk.Call_GetCapabilities(ctx, dev, getCapabilities)
+	getCapabilities := device.GetCapabilities{Category: []onvif.CapabilityCategory{"All"}}
+	getCapabilitiesResponse, err := dev.CallMethod(getCapabilities)
 	if err != nil {
 		log.Println(err)
 	} else {
-		fmt.Println(getCapabilitiesResponse)
+		fmt.Println(readResponse(getCapabilitiesResponse))
 	}
-
-	createUserResponse, err := sdk.Call_CreateUsers(ctx, dev, createUser)
+	createUserResponse, err := dev.CallMethod(createUser)
 	if err != nil {
 		log.Println(err)
 	} else {
-		// You could use https://github.com/use-go/onvif/gosoap for pretty printing response
-		fmt.Println(createUserResponse)
+		/*
+			You could use https://github.com/kerberos-io/onvif/gosoap for pretty printing response
+		*/
+		fmt.Println(gosoap.SoapMessage(readResponse(createUserResponse)).StringIndent())
 	}
 
 }
