@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/beevik/etree"
-	"github.com/icholy/digest"
 	"github.com/juju/errors"
 )
 
@@ -33,82 +32,23 @@ func SendSoap(httpClient *http.Client, endpoint, message string) (*http.Response
 	return resp, nil
 }
 
-func SendSoapWithDigest(httpClient *http.Client, endpoint, message, username, password string) (*http.Response, error) {
-	doc := etree.NewDocument()
-	if err := doc.ReadFromString(message); err != nil {
-		return nil, err
-	}
-
-	e := doc.FindElement("./Envelope/Header/Security")
-	if e != nil {
-		bodyTag := doc.Root().SelectElement("Header")
-		bodyTag.RemoveChild(e)
-		data, err := doc.WriteToString()
-		if err != nil {
-			return nil, err
-		}
-		message = data
-	}
-
-	req, err := http.NewRequest("POST", endpoint, bytes.NewBufferString(message))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/soap+xml; charset=utf-8")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return resp, errors.Annotate(err, "Post with digest")
-	}
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		return resp, err
-	}
-
-	wwwAuth := resp.Header.Get("WWW-Authenticate")
-	chal, err := digest.ParseChallenge(wwwAuth)
-	if err != nil {
-		return resp, fmt.Errorf("fail to parse challenge: %w", err)
-	}
-
-	cred, err := digest.Digest(chal, digest.Options{
-		Method:   "POST",
-		URI:      req.URL.RequestURI(),
-		Username: username,
-		Password: password,
-	})
-
-	if err != nil {
-		return resp, fmt.Errorf("fail to build digest: %w", err)
-	}
-
-	// Readout body to close the connection
-	resp.Body.Close()
-
-	req.Header.Add("Authorization", cred.String())
-	req.Body = io.NopCloser((bytes.NewBufferString(message)))
-	resp, err = httpClient.Do(req)
-	if err != nil {
-		return nil, errors.Annotate(err, "Post with digest")
-	}
-	if resp.StatusCode >= 400 && resp.StatusCode < 600 {
-		return resp, errors.Errorf("Post with digest error: %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	return resp, nil
-}
-
 // SendSoapWithDigest sends a soap message and, when the device answers with an
 // HTTP 401 digest challenge, transparently retries the request with the
 // computed HTTP digest Authorization header.
 //
-// The initial request is sent as-is, so any WS-Security header already present
-// in the message is preserved. HTTP digest is only attempted when the device
-// explicitly requests it, which keeps WS-Security-only cameras working while
-// also supporting cameras that require HTTP digest for authenticated calls.
+// Any wsse:Security header present in the message is stripped before sending:
+// when a device requires HTTP digest the credentials travel in the
+// Authorization header, so keeping the WS-Security UsernameToken in the body
+// would put the credentials on the wire twice. Other SOAP header blocks (for
+// example WS-Addressing reference parameters) are preserved so vendor-specific
+// routing keeps working across the retry.
 func SendSoapWithDigest(httpClient *http.Client, endpoint, message, username, password string) (*http.Response, error) {
 	if httpClient == nil {
 		httpClient = new(http.Client)
 	}
+
+	// Avoid sending the credentials twice (WS-Security + digest) on the retry.
+	message = stripWSSecurityHeader(message)
 
 	resp, err := httpClient.Post(endpoint, soapContentType, bytes.NewBufferString(message))
 	if err != nil {
@@ -147,6 +87,30 @@ func SendSoapWithDigest(httpClient *http.Client, endpoint, message, username, pa
 	}
 
 	return resp, nil
+}
+
+// stripWSSecurityHeader removes the wsse:Security header block from a SOAP
+// envelope, leaving all other header blocks intact. The message is returned
+// unchanged if it cannot be parsed as XML or has no such header.
+func stripWSSecurityHeader(message string) string {
+	doc := etree.NewDocument()
+	if err := doc.ReadFromString(message); err != nil {
+		return message
+	}
+	security := doc.FindElement("./Envelope/Header/Security")
+	if security == nil {
+		return message
+	}
+	header := doc.Root().SelectElement("Header")
+	if header == nil {
+		return message
+	}
+	header.RemoveChild(security)
+	data, err := doc.WriteToString()
+	if err != nil {
+		return message
+	}
+	return data
 }
 
 var digestParamRe = regexp.MustCompile(`(\w+)=(?:"([^"]*)"|([^,]+))`)

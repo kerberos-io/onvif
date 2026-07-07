@@ -94,11 +94,12 @@ type Device struct {
 }
 
 type DeviceParams struct {
-	Xaddr      string
-	Username   string
-	Password   string
-	HttpClient *http.Client
-	AuthMode   string
+	Xaddr              string
+	EndpointRefAddress string
+	Username           string
+	Password           string
+	HttpClient         *http.Client
+	AuthMode           string
 }
 
 // GetServices return available endpoints
@@ -106,30 +107,21 @@ func (dev *Device) GetServices() map[string]string {
 	return dev.endpoints
 }
 
-// GetDeviceInfo return available endpoints
+// GetServices return available endpoints
 func (dev *Device) GetDeviceInfo() DeviceInfo {
 	return dev.info
 }
 
-// GetDeviceParams return available endpoints
-func (dev *Device) GetDeviceParams() DeviceParams {
-	return dev.params
-}
-
-func readResponse(resp *http.Response) string {
-	b, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		panic(err)
-	}
-	return string(b)
-}
-
-// GetAvailableDevicesAtSpecificEthernetInterface ...
-func GetAvailableDevicesAtSpecificEthernetInterface(interfaceName string) ([]Device, error) {
-	// Call a ws-discovery Probe Message to Discover NVT type Devices
-	devices, err := wsdiscovery.SendProbe(interfaceName, nil, []string{"dn:" + NVT.String()}, map[string]string{"dn": "http://www.onvif.org/ver10/network/wsdl"})
-	if err != nil {
-		return nil, err
+// SetDeviceInfoFromScopes goes through the scopes and sets the device info fields for supported categories (currently name and hardware).
+// See 7.3.2.2 Scopes in the ONVIF Core Specification (https://www.onvif.org/specs/core/ONVIF-Core-Specification.pdf).
+func (dev *Device) SetDeviceInfoFromScopes(scopes []string) {
+	newInfo := dev.info
+	supportedScopes := []struct {
+		category string
+		setField func(s string)
+	}{
+		{category: "name", setField: func(s string) { newInfo.Name = s }},
+		{category: "hardware", setField: func(s string) { newInfo.Model = s }},
 	}
 
 	for _, s := range scopes {
@@ -240,7 +232,7 @@ func (dev *Device) buildMethodSOAP(msg string) (gosoap.SoapMessage, error) {
 }
 
 // getEndpoint functions get the target service endpoint in a better way
-func (dev Device) getEndpoint(endpoint string) (string, error) {
+func (dev *Device) getEndpoint(endpoint string) (string, error) {
 
 	// common condition, endpointMark in map we use this.
 	if endpointURL, bFound := dev.endpoints[endpoint]; bFound {
@@ -291,20 +283,6 @@ func (dev Device) callMethodDo(endpoint string, method interface{}) (*http.Respo
 	return dev.sendSOAP(endpoint, soap)
 }
 
-// Authentication modes selectable through DeviceParams.AuthMode.
-const (
-	// NoAuth disables authentication entirely.
-	NoAuth = "none"
-	// DigestAuth uses HTTP digest only, without a WS-Security header.
-	DigestAuth = "digest"
-	// UsernameTokenAuth uses a WS-Security UsernameToken header only and never
-	// falls back to HTTP digest.
-	UsernameTokenAuth = "usernametoken"
-	// Both adds a WS-Security header (when credentials exist) and additionally
-	// answers an HTTP digest challenge if the device requests one.
-	Both = "both"
-)
-
 // sendSOAP dispatches an assembled SOAP message to the endpoint using the
 // authentication mechanism selected through DeviceParams.AuthMode.
 //
@@ -316,8 +294,9 @@ const (
 //   - DigestAuth ("digest"):      HTTP digest only; no WS-Security header.
 //   - Both ("both") / unset (""): WS-Security credentials are added (when
 //     available) and HTTP digest is attempted only if the device answers with
-//     an authentication challenge (HTTP 401 Unauthorized). The WS-Security
-//     header is never stripped.
+//     an authentication challenge (HTTP 401 Unauthorized). On that digest
+//     retry the WS-Security header is dropped so the credentials are not sent
+//     twice.
 func (dev Device) sendSOAP(endpoint string, soap gosoap.SoapMessage) (*http.Response, error) {
 	hasCredentials := dev.params.Username != "" || dev.params.Password != ""
 
@@ -340,4 +319,223 @@ func (dev Device) sendSOAP(endpoint string, soap gosoap.SoapMessage) (*http.Resp
 		}
 		return networking.SendSoapWithDigest(dev.params.HttpClient, endpoint, soap.String(), dev.params.Username, dev.params.Password)
 	}
+}
+
+func (dev *Device) GetDeviceParams() DeviceParams {
+	return dev.params
+}
+
+func (dev *Device) GetEndpointByRequestStruct(requestStruct interface{}) (string, error) {
+	pkgPath := strings.Split(reflect.TypeOf(requestStruct).Elem().PkgPath(), "/")
+	pkg := strings.ToLower(pkgPath[len(pkgPath)-1])
+
+	endpoint, err := dev.getEndpoint(pkg)
+	if err != nil {
+		return "", err
+	}
+	return endpoint, err
+}
+
+/*func (dev *Device) SendSoap(endpoint string, xmlRequestBody string) (resp *http.Response, err error) {
+	soap := gosoap.NewEmptySOAP()
+	soap.AddStringBodyContent(xmlRequestBody)
+	soap.AddRootNamespaces(Xlmns)
+	if dev.params.AuthMode == UsernameTokenAuth || dev.params.AuthMode == Both {
+		soap.AddWSSecurity(dev.params.Username, dev.params.Password)
+	}
+
+	if dev.params.AuthMode == DigestAuth || dev.params.AuthMode == Both {
+		resp, err = dev.digestClient.Do(http.MethodPost, endpoint, soap.String())
+	} else {
+		var req *http.Request
+		req, err = createHttpRequest(http.MethodPost, endpoint, soap.String())
+		if err != nil {
+			return nil, err
+		}
+		resp, err = dev.params.HttpClient.Do(req)
+	}
+	return resp, err
+}*/
+
+// SendSoap POSTs the given body wrapped in a SOAP envelope.
+func (dev Device) SendSoap(endpoint string, xmlRequestBody string) (*http.Response, error) {
+	return dev.SendSoapWithOptions(endpoint, xmlRequestBody)
+}
+
+// SendSoapWithHeader is SendSoap plus arbitrary inner-Header XML —
+// needed to echo WS-Addressing ReferenceParameters (with
+// wsa:IsReferenceParameter="true") back to vendors like AXIS that
+// identify pull-point subscriptions through them rather than the URL.
+//
+// xmlHeaderContent must be well-formed XML representing one or more
+// SOAP Header child elements (siblings are supported; the spec lets
+// each reference parameter be its own header block). Malformed or
+// element-free content errors before any request is made.
+//
+// SECURITY: do not pass content sourced from untrusted clients. The
+// API assumes the caller is authoritative for the envelope. Header
+// content forwards verbatim — among others, <wsse:Security> overrides
+// auth, <wsa:Action> overrides intent, <wsa:To>/<wsa:ReplyTo>/
+// <wsa:FaultTo> redirect responses, <wsa:MessageID> enables replay-
+// token forgery, and <wsu:Timestamp> bypasses freshness checks.
+func (dev Device) SendSoapWithHeader(endpoint, xmlRequestBody, xmlHeaderContent string) (*http.Response, error) {
+	return dev.SendSoapWithOptions(endpoint, xmlRequestBody, WithSOAPHeader(xmlHeaderContent))
+}
+
+// SendSoapOption tweaks a single SendSoapWithOptions call. New options
+// (per-call timeout, context, custom envelope namespaces, ...) should
+// be added as WithX constructors here rather than as new method
+// variants on Device.
+type SendSoapOption func(*soapConfig)
+
+type soapConfig struct {
+	headerContent string
+}
+
+// WithSOAPHeader adds inner-Header XML to the envelope. See
+// SendSoapWithHeader for the content contract.
+func WithSOAPHeader(headerContent string) SendSoapOption {
+	return func(c *soapConfig) { c.headerContent = headerContent }
+}
+
+// SendSoapWithOptions is the workhorse behind SendSoap and
+// SendSoapWithHeader; call it directly when you need to combine
+// options or pass options not surfaced by the convenience wrappers.
+func (dev Device) SendSoapWithOptions(endpoint, xmlRequestBody string, opts ...SendSoapOption) (*http.Response, error) {
+	var cfg soapConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	soap := gosoap.NewEmptySOAP()
+	soap.AddStringBodyContent(xmlRequestBody)
+	soap.AddRootNamespaces(Xlmns)
+	soap.AddAction()
+	if cfg.headerContent != "" {
+		if err := soap.AddStringHeaderContents(cfg.headerContent); err != nil {
+			return nil, fmt.Errorf("add header content: %w", err)
+		}
+	}
+	if dev.params.Username != "" && dev.params.Password != "" {
+		soap.AddWSSecurity(dev.params.Username, dev.params.Password)
+	}
+
+	servResp, err := networking.SendSoap(dev.params.HttpClient, endpoint, soap.String())
+	if err != nil {
+		if servResp != nil {
+			servResp.Body.Close()
+		}
+		servResp, err = networking.SendSoapWithDigest(dev.params.HttpClient, endpoint, soap.String(), dev.params.Username, dev.params.Password)
+	}
+	return servResp, err
+}
+
+func createHttpRequest(httpMethod string, endpoint string, soap string) (req *http.Request, err error) {
+	req, err = http.NewRequest(httpMethod, endpoint, bytes.NewBufferString(soap))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(ContentType, "application/soap+xml; charset=utf-8")
+	return req, nil
+}
+
+func (dev *Device) CallOnvifFunction(serviceName, functionName string, data []byte) (interface{}, error) {
+	function, err := FunctionByServiceAndFunctionName(serviceName, functionName)
+	if err != nil {
+		return nil, err
+	}
+	request, err := createRequest(function, data)
+	if err != nil {
+		return nil, fmt.Errorf("fail to create '%s' request for the web service '%s', %v", functionName, serviceName, err)
+	}
+
+	endpoint, err := dev.GetEndpointByRequestStruct(request)
+	if err != nil {
+		return nil, err
+	}
+
+	requestBody, err := xml.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	xmlRequestBody := string(requestBody)
+
+	servResp, err := dev.SendSoapWithOptions(endpoint, xmlRequestBody)
+	if err != nil {
+		return nil, fmt.Errorf("fail to send the '%s' request for the web service '%s', %v", functionName, serviceName, err)
+	}
+	defer servResp.Body.Close()
+
+	rsp, err := ioutil.ReadAll(servResp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	responseEnvelope, err := createResponse(function, rsp)
+	if err != nil {
+		return nil, fmt.Errorf("fail to create '%s' response for the web service '%s', %v", functionName, serviceName, err)
+	}
+
+	if servResp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("fail to verify the authentication for the function '%s' of web service '%s'. Onvif error: %s",
+			functionName, serviceName, responseEnvelope.Body.Fault.String())
+	} else if servResp.StatusCode == http.StatusBadRequest {
+		return nil, fmt.Errorf("invalid request for the function '%s' of web service '%s'. Onvif error: %s",
+			functionName, serviceName, responseEnvelope.Body.Fault.String())
+	} else if servResp.StatusCode > http.StatusNoContent {
+		return nil, fmt.Errorf("fail to execute the request for the function '%s' of web service '%s'. Onvif error: %s",
+			functionName, serviceName, responseEnvelope.Body.Fault.String())
+	}
+	return responseEnvelope.Body.Content, nil
+}
+
+func createRequest(function Function, data []byte) (interface{}, error) {
+	request := function.Request()
+	if len(data) > 0 {
+		err := json.Unmarshal(data, request)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return request, nil
+}
+
+func createResponse(function Function, data []byte) (*gosoap.SOAPEnvelope, error) {
+	response := function.Response()
+	responseEnvelope := gosoap.NewSOAPEnvelope(response)
+	err := xml.Unmarshal(data, responseEnvelope)
+	if err != nil {
+		return nil, err
+	}
+	return responseEnvelope, nil
+}
+
+// SendGetSnapshotRequest sends the Get request to retrieve the snapshot from the Onvif camera
+// The parameter url is come from the "GetSnapshotURI" command.
+func (dev *Device) SendGetSnapshotRequest(url string) (resp *http.Response, err error) {
+	soap := gosoap.NewEmptySOAP()
+	soap.AddRootNamespaces(Xlmns)
+	if dev.params.AuthMode == UsernameTokenAuth {
+		soap.AddWSSecurity(dev.params.Username, dev.params.Password)
+		var req *http.Request
+		req, err = createHttpRequest(http.MethodGet, url, soap.String())
+		if err != nil {
+			return nil, err
+		}
+		// Basic auth might work for some camera
+		req.SetBasicAuth(dev.params.Username, dev.params.Password)
+		resp, err = dev.params.HttpClient.Do(req)
+
+	} else if dev.params.AuthMode == DigestAuth || dev.params.AuthMode == Both {
+		soap.AddWSSecurity(dev.params.Username, dev.params.Password)
+		resp, err = dev.digestClient.Do(http.MethodGet, url, soap.String())
+
+	} else {
+		var req *http.Request
+		req, err = createHttpRequest(http.MethodGet, url, soap.String())
+		if err != nil {
+			return nil, err
+		}
+		resp, err = dev.params.HttpClient.Do(req)
+	}
+	return resp, err
 }
