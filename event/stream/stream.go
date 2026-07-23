@@ -67,10 +67,11 @@ type Options struct {
 	// BufferSize — zero means default (16); use -1 for unbuffered.
 	BufferSize int
 	// CloseDrainTimeout bounds Close's wait for the pull and renew
-	// loops to exit. Zero derives it as PullTimeout + closeDrainSlack,
-	// so it outlasts an in-flight poll by default. Raise it when the
-	// device's http.Client.Timeout is higher still — that ceiling, not
-	// PullTimeout, is the real worst case for a stalled camera.
+	// loops to exit. Zero derives it from whichever is longer, the
+	// resolved PullTimeout or the device's http.Client.Timeout, plus
+	// closeDrainSlack — so it outlasts any call those loops can be
+	// parked in. Only NewStream can see the client ceiling; callers
+	// reaching newStream directly get the PullTimeout-only bound.
 	CloseDrainTimeout time.Duration
 }
 
@@ -254,7 +255,25 @@ func NewStream(ctx context.Context, dev *onvif.Device, opts Options) (*Stream, e
 	if err := validateClientTimeout(clientTimeoutOf(dev), opts.withDefaults().PullTimeout); err != nil {
 		return nil, err
 	}
+	// Derived here rather than in withDefaults because only this entry
+	// point can see the device's HTTP ceiling.
+	if opts.CloseDrainTimeout == 0 {
+		opts.CloseDrainTimeout = drainFor(opts.withDefaults().PullTimeout, clientTimeoutOf(dev))
+	}
 	return newStream(ctx, deviceCaller{dev: dev}, opts)
+}
+
+// drainFor bounds Close's wait by the longest a SOAP call can run.
+// PullTimeout is how long the camera holds a poll, but the client
+// ceiling is what caps the call and callers set it higher. A zero
+// ceiling means unbounded, where no finite drain helps, so the poll
+// stays the best available bound.
+func drainFor(pullTimeout, clientTimeout time.Duration) time.Duration {
+	longest := pullTimeout
+	if clientTimeout > longest {
+		longest = clientTimeout
+	}
+	return longest + closeDrainSlack
 }
 
 func newStream(ctx context.Context, c caller, opts Options) (*Stream, error) {

@@ -541,3 +541,34 @@ func TestCloseDrainTimeout_ScalesWithPullTimeout(t *testing.T) {
 		})
 	}
 }
+
+// TestDrainFor_BoundedByTheLongestPossibleCall — PullTimeout is how
+// long the camera holds a poll, but the client ceiling is what actually
+// caps the call, and callers routinely set it higher. Deriving the
+// drain from PullTimeout alone leaves it shorter than a call that runs
+// to the client ceiling, which is the case Close cannot survive: it
+// gives up, skips Unsubscribe, and orphans the pull-point.
+func TestDrainFor_BoundedByTheLongestPossibleCall(t *testing.T) {
+	tests := []struct {
+		name   string
+		pull   time.Duration
+		client time.Duration
+		want   time.Duration
+	}{
+		{"client ceiling above the poll wins", 30 * time.Second, 40 * time.Second, 40*time.Second + closeDrainSlack},
+		{"client ceiling below the poll is not the bound", 30 * time.Second, 10 * time.Second, 30*time.Second + closeDrainSlack},
+		{"equal leaves the poll as the bound", 30 * time.Second, 30 * time.Second, 30*time.Second + closeDrainSlack},
+		{"unbounded client falls back to the poll", 30 * time.Second, 0, 30*time.Second + closeDrainSlack},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := drainFor(tt.pull, tt.client)
+			assert.Equal(t, tt.want, got)
+			assert.Greater(t, got, tt.pull, "the drain must outlast a poll")
+			if tt.client > 0 {
+				assert.Greater(t, got, tt.client, "the drain must outlast the client ceiling")
+			}
+		})
+	}
+}
