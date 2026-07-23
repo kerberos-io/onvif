@@ -25,6 +25,12 @@ func TestClassifyTopic(t *testing.T) {
 		{"axis_fence_guard", "tnsaxis:CameraApplicationPlatform/FenceGuard/Camera1ProfileANY", KindMotion},
 		{"axis_loitering_guard", "tnsaxis:CameraApplicationPlatform/LoiteringGuard/Camera1ProfileANY", KindMotion},
 
+		// AXIS VMD 4 — the stock motion app, and the one an installer
+		// reaches for before any Guard product. The profile suffix
+		// varies with the configured VMD profile.
+		{"axis_vmd4_profile_any", "tnsaxis:CameraApplicationPlatform/VMD/Camera1ProfileANY", KindMotion},
+		{"axis_vmd4_profile_numbered", "tnsaxis:CameraApplicationPlatform/VMD/Camera1Profile1", KindMotion},
+
 		// --- Tampering --------------------------------------------------
 
 		{"tamper_detector", "tns1:RuleEngine/TamperDetector/Tamper", KindTampering},

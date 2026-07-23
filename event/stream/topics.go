@@ -79,10 +79,12 @@ var topicRules = []struct {
 	// https://developer.axis.com/vapix/network-video/event-and-action-services/
 	{"MotionRegionDetector/Motion", KindMotion},
 
-	// AXIS Guard suite — vendor analytics apps with Camera<N>Profile<ID>
-	// suffixes. Treated as motion so they can drive motion-triggered
-	// recording on cameras using these apps instead of basic VMD.
+	// AXIS ACAP motion apps with Camera<N>Profile<ID> suffixes. VMD is
+	// the stock app shipped on the camera; the Guard suite are the
+	// paid analytics products. Prefix-match because of the suffix.
+	// https://developer.axis.com/vapix/applications/vmd4
 	// https://developer.axis.com/vapix/applications/motion-guard
+	{"CameraApplicationPlatform/VMD/", KindMotion},
 	{"CameraApplicationPlatform/MotionGuard/", KindMotion},
 	{"CameraApplicationPlatform/FenceGuard/", KindMotion},
 	{"CameraApplicationPlatform/LoiteringGuard/", KindMotion},
