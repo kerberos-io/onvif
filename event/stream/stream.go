@@ -234,6 +234,12 @@ func (s *Stream) updateGrantedTerminationIfGen(gen uint64, t time.Time) {
 //
 // The returned Stream stops when ctx is cancelled or Close is called.
 func NewStream(ctx context.Context, dev *onvif.Device, opts Options) (*Stream, error) {
+	// Checked before the subscription call: this config can only fail,
+	// so surfacing it here beats a stream that appears to work and
+	// silently survives on reconnects alone.
+	if err := validateClientTimeout(clientTimeoutOf(dev), opts.withDefaults().PullTimeout); err != nil {
+		return nil, err
+	}
 	return newStream(ctx, deviceCaller{dev: dev}, opts)
 }
 
