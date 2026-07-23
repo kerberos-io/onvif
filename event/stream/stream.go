@@ -39,7 +39,9 @@ type Options struct {
 	// server-side filtering is fragile across vendors and empty is
 	// required for AXIS.
 	RawTopicFilter string
-	// PullTimeout — zero means default (5s).
+	// PullTimeout — zero means default (5s). The device's
+	// http.Client.Timeout must exceed this by minClientHeadroom or
+	// NewStream returns ErrInvalidOptions.
 	PullTimeout time.Duration
 	// MessageLimit — zero means default (32). Busy AXIS cameras with
 	// many configured rules can burst beyond 10 per pull.

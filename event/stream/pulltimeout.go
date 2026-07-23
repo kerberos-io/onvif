@@ -1,31 +1,40 @@
 package stream
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/kerberos-io/onvif"
 )
 
-// validateClientTimeout rejects an HTTP client ceiling that cannot
-// outlast the PullMessages long-poll.
+// ErrInvalidOptions marks a configuration that cannot succeed. Callers
+// retry the pull/renew/recreate errors; retrying this one never helps,
+// so it is a distinct sentinel they can short-circuit on.
+var ErrInvalidOptions = errors.New("stream: invalid options")
+
+// minClientHeadroom is how far http.Client.Timeout must exceed
+// PullTimeout. The client ceiling covers dial, TLS and the response
+// transfer on top of the poll it has to outlast, and starts before the
+// camera has parsed the request; on a cellular bearer that overhead
+// runs to hundreds of milliseconds.
+const minClientHeadroom = 5 * time.Second
+
+// validateClientTimeout rejects a client ceiling that cannot outlast
+// the PullMessages long-poll plus minClientHeadroom.
 //
-// PullMessages asks the camera to hold the connection open for up to
-// PullTimeout. http.Client.Timeout bounds the entire exchange — dial,
-// write, and the wait for response headers — and starts before the
-// camera has parsed the request, so it always expires first when the
-// two are equal. The pull then fails on every interval with no event,
-// and the subscription survives only by being recreated after
-// ReconnectAfterFailures, which replays the camera's whole property
-// state each time. A zero client timeout means unbounded, which is safe
-// here because the pull loop is already bounded by ctx.
+// Zero means unbounded and is accepted: it is the SDK's default when a
+// caller passes no client, so rejecting it would break every default
+// consumer. Note it is not risk-free — the caller interface documents
+// that ctx cannot interrupt an in-flight SOAP call, so only the client
+// timeout can unwedge a stalled camera.
 func validateClientTimeout(clientTimeout, pullTimeout time.Duration) error {
-	if clientTimeout == 0 || clientTimeout > pullTimeout {
+	if clientTimeout == 0 || clientTimeout >= pullTimeout+minClientHeadroom {
 		return nil
 	}
 	return fmt.Errorf(
-		"http.Client.Timeout (%s) must exceed PullTimeout (%s): PullMessages is a long-poll and the client would abort every quiet pull; raise the client timeout above PullTimeout or leave it zero",
-		clientTimeout, pullTimeout)
+		"%w: http.Client.Timeout (%s) must exceed PullTimeout (%s) by at least %s; PullMessages is a long-poll and the client would abort every quiet pull",
+		ErrInvalidOptions, clientTimeout, pullTimeout, minClientHeadroom)
 }
 
 // clientTimeoutOf reports the device's HTTP client ceiling, or 0 when
