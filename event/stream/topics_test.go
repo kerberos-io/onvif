@@ -31,6 +31,12 @@ func TestClassifyTopic(t *testing.T) {
 		{"axis_vmd4_profile_any", "tnsaxis:CameraApplicationPlatform/VMD/Camera1ProfileANY", KindMotion},
 		{"axis_vmd4_profile_numbered", "tnsaxis:CameraApplicationPlatform/VMD/Camera1Profile1", KindMotion},
 
+		// AXIS VMD 3 — the firmware-builtin predecessor, published under
+		// RuleEngine rather than CameraApplicationPlatform. Still shipping
+		// on deployed cameras; observed on site-07 camera-10.
+		{"axis_vmd3_video_1", "tns1:RuleEngine/tnsaxis:VMD3/vmd3_video_1", KindMotion},
+		{"axis_vmd3_video_2", "tns1:RuleEngine/tnsaxis:VMD3/vmd3_video_2", KindMotion},
+
 		// --- Tampering --------------------------------------------------
 
 		{"tamper_detector", "tns1:RuleEngine/TamperDetector/Tamper", KindTampering},
