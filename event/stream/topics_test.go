@@ -32,8 +32,8 @@ func TestClassifyTopic(t *testing.T) {
 		{"axis_vmd4_profile_numbered", "tnsaxis:CameraApplicationPlatform/VMD/Camera1Profile1", KindMotion},
 
 		// AXIS VMD 3 — the firmware-builtin predecessor, published under
-		// RuleEngine rather than CameraApplicationPlatform. Still shipping
-		// on deployed cameras; observed on site-07 camera-10.
+		// RuleEngine rather than CameraApplicationPlatform. Still
+		// shipping on deployed cameras.
 		{"axis_vmd3_video_1", "tns1:RuleEngine/tnsaxis:VMD3/vmd3_video_1", KindMotion},
 		{"axis_vmd3_video_2", "tns1:RuleEngine/tnsaxis:VMD3/vmd3_video_2", KindMotion},
 
@@ -100,6 +100,16 @@ func TestClassifyTopic(t *testing.T) {
 		{"relay_failure_not_digital_output", "tns1:Device/HardwareFailure/RelayFailure", KindUnknown},
 		{"digital_input_config_not_digital_input", "tns1:Device/IO/DigitalInputConfiguration", KindUnknown},
 		{"tamper_detector_log_not_tampering", "tns1:Device/Diagnostics/TamperDetectorLog", KindUnknown},
+
+		// The two AXIS VMD needles carry a trailing slash so they match a
+		// whole path segment. Without it, any sibling app or rule whose
+		// name merely starts with VMD / VMD3 would classify as motion and
+		// drive recording.
+		{"vmd_statistics_app_not_motion", "tnsaxis:CameraApplicationPlatform/VMDStatistics/Camera1", KindUnknown},
+		{"vmd3_config_rule_not_motion", "tns1:RuleEngine/tnsaxis:VMD3Config/Changed", KindUnknown},
+		// VMD3 is scoped to RuleEngine; the same name under another
+		// container is a different thing.
+		{"vmd3_outside_rule_engine_not_motion", "tnsaxis:Storage/VMD3/Status", KindUnknown},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
