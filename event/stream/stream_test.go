@@ -485,6 +485,10 @@ func TestClose_BoundedWhenLoopsStuckOnHungHTTP(t *testing.T) {
 	s, err := newStream(ctx, fc, Options{
 		PullTimeout:        100 * time.Millisecond,
 		InitialTermination: 30 * time.Second,
+		// Explicit so the bound stays short: the derived default is
+		// PullTimeout + closeDrainSlack, which would make this test
+		// sit for ten seconds.
+		CloseDrainTimeout: time.Second,
 	})
 	require.NoError(t, err)
 
@@ -504,9 +508,36 @@ func TestClose_BoundedWhenLoopsStuckOnHungHTTP(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "drain", "expected a drain-timeout error")
-	// Total budget is closeDrainTimeout for the wait + ~0 for unsubscribe
+	// Total budget is CloseDrainTimeout for the wait + ~0 for unsubscribe
 	// (which is skipped when drain times out). Give plenty of slack for
 	// scheduling on a loaded CI machine.
-	assert.Less(t, elapsed, closeDrainTimeout+2*time.Second,
-		"Close exceeded bound (%s); expected ~%s", elapsed, closeDrainTimeout)
+	assert.Less(t, elapsed, s.opts.CloseDrainTimeout+2*time.Second,
+		"Close exceeded bound (%s); expected ~%s", elapsed, s.opts.CloseDrainTimeout)
+}
+
+// TestCloseDrainTimeout_ScalesWithPullTimeout — the drain bound has to
+// outlast an in-flight pull, otherwise Close times out deterministically
+// on every shutdown that lands mid-poll, skips Unsubscribe, and orphans
+// the pull-point at the camera until its termination expires. A fixed 5s
+// was fine only while PullTimeout was 5s; callers raising the poll made
+// the drain the shorter of the two.
+func TestCloseDrainTimeout_ScalesWithPullTimeout(t *testing.T) {
+	tests := []struct {
+		name string
+		opts Options
+		want time.Duration
+	}{
+		{"derived from the default poll", Options{}, 5*time.Second + closeDrainSlack},
+		{"derived from a long poll", Options{PullTimeout: 30 * time.Second}, 30*time.Second + closeDrainSlack},
+		{"explicit value wins", Options{PullTimeout: 30 * time.Second, CloseDrainTimeout: time.Minute}, time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.opts.withDefaults()
+			assert.Equal(t, tt.want, got.CloseDrainTimeout)
+			assert.Greater(t, got.CloseDrainTimeout, got.PullTimeout,
+				"the drain must outlast a pull or Close can never drain cleanly")
+		})
+	}
 }
