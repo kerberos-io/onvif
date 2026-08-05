@@ -24,12 +24,14 @@ func SendSoap(httpClient *http.Client, endpoint, message string) (*http.Response
 		return resp, errors.Annotate(err, "Post")
 	}
 
-	// if resp.StatusCode is 4xx,5xx, return error
-	if resp.StatusCode >= 400 && resp.StatusCode < 600 {
-		return resp, errors.Errorf("Server error: %d: %s", resp.StatusCode, resp.Status)
-	}
+	return resp, responseError(resp)
+}
 
-	return resp, nil
+func responseError(resp *http.Response) error {
+	if resp.StatusCode >= 400 && resp.StatusCode < 600 {
+		return errors.Errorf("Server error: %d: %s", resp.StatusCode, resp.Status)
+	}
+	return nil
 }
 
 // SendSoapWithDigest sends a soap message and, when the device answers with an
@@ -57,13 +59,13 @@ func SendSoapWithDigest(httpClient *http.Client, endpoint, message, username, pa
 
 	// Only escalate to HTTP digest when the device explicitly asks for it.
 	if resp.StatusCode != http.StatusUnauthorized {
-		return resp, nil
+		return resp, responseError(resp)
 	}
 
 	challenge := resp.Header.Get("WWW-Authenticate")
 	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(challenge)), "digest") {
 		// Not a digest challenge (e.g. Basic) - nothing more we can do here.
-		return resp, nil
+		return resp, responseError(resp)
 	}
 
 	authorization := newDigestAuthorization(challenge, http.MethodPost, endpoint, username, password)
@@ -86,7 +88,7 @@ func SendSoapWithDigest(httpClient *http.Client, endpoint, message, username, pa
 		return resp, errors.Annotate(err, "Post with digest")
 	}
 
-	return resp, nil
+	return resp, responseError(resp)
 }
 
 // stripWSSecurityHeader removes the wsse:Security header block from a SOAP

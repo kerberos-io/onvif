@@ -1,9 +1,56 @@
 package networking
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestSendSoapWithDigestReturnsServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	response, err := SendSoapWithDigest(server.Client(), server.URL, "<Envelope/>", "user", "password")
+	if response == nil {
+		t.Fatal("SendSoapWithDigest returned a nil response")
+	}
+	defer response.Body.Close()
+	if err == nil {
+		t.Fatal("SendSoapWithDigest returned nil error for HTTP 500")
+	}
+}
+
+func TestSendSoapWithDigestReturnsServerErrorAfterAuthentication(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requestCount++
+		if requestCount == 1 {
+			writer.Header().Set("WWW-Authenticate", `Digest realm="AXIS", nonce="nonce", qop="auth", algorithm=MD5`)
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if !strings.HasPrefix(request.Header.Get("Authorization"), "Digest ") {
+			t.Error("authenticated retry is missing Digest Authorization header")
+		}
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	response, err := SendSoapWithDigest(server.Client(), server.URL, "<Envelope/>", "user", "password")
+	if response == nil {
+		t.Fatal("SendSoapWithDigest returned a nil response")
+	}
+	defer response.Body.Close()
+	if err == nil {
+		t.Fatal("SendSoapWithDigest returned nil error for authenticated HTTP 500")
+	}
+	if requestCount != 2 {
+		t.Fatalf("request count = %d, want 2", requestCount)
+	}
+}
 
 func TestParseDigestChallenge(t *testing.T) {
 	challenge := `Digest realm="testrealm@host.com", qop="auth,auth-int", nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", opaque="5ccc069c403ebaf9f0171e9517f40e41", algorithm=MD5`
