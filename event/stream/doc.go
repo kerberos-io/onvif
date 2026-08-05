@@ -18,7 +18,8 @@
 //	}
 //
 // NewStream performs network I/O so auth and reachability failures
-// surface synchronously. Events and Errors close when the Stream stops;
+// surface synchronously, and rejects a client timeout that cannot
+// outlast PullTimeout with ErrInvalidOptions. Events and Errors close when the Stream stops;
 // Errors sends are non-blocking so a stalled consumer drops older
 // errors rather than blocking the pull loop. After a silent reconnect,
 // the next batch's events carry Event.AfterReconnect=true.

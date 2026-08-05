@@ -39,7 +39,9 @@ type Options struct {
 	// server-side filtering is fragile across vendors and empty is
 	// required for AXIS.
 	RawTopicFilter string
-	// PullTimeout — zero means default (5s).
+	// PullTimeout — zero means default (5s). The device's
+	// http.Client.Timeout must exceed this by minClientHeadroom or
+	// NewStream returns ErrInvalidOptions.
 	PullTimeout time.Duration
 	// MessageLimit — zero means default (32). Busy AXIS cameras with
 	// many configured rules can burst beyond 10 per pull.
@@ -234,6 +236,12 @@ func (s *Stream) updateGrantedTerminationIfGen(gen uint64, t time.Time) {
 //
 // The returned Stream stops when ctx is cancelled or Close is called.
 func NewStream(ctx context.Context, dev *onvif.Device, opts Options) (*Stream, error) {
+	// Checked before the subscription call: this config can only fail,
+	// so surfacing it here beats a stream that appears to work and
+	// silently survives on reconnects alone.
+	if err := validateClientTimeout(clientTimeoutOf(dev), opts.withDefaults().PullTimeout); err != nil {
+		return nil, err
+	}
 	return newStream(ctx, deviceCaller{dev: dev}, opts)
 }
 
