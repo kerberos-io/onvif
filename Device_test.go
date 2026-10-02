@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kerberos-io/onvif/deviceio"
 	"github.com/kerberos-io/onvif/gosoap"
 
 	"github.com/stretchr/testify/assert"
@@ -335,4 +336,68 @@ func TestDevice_SendSOAP_BothFallsBackToDigest(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	require.NotEmpty(t, authedBody, "expected an authenticated digest POST")
 	assert.NotContains(t, authedBody, "UsernameToken")
+}
+
+func TestEndpointKeyFromNamespace(t *testing.T) {
+	cases := map[string]string{
+		"http://www.onvif.org/ver10/device/wsdl":    "device",
+		"http://www.onvif.org/ver10/deviceIO/wsdl":  "deviceio",
+		"http://www.onvif.org/ver10/deviceio/wsdl":  "deviceio",
+		"http://www.onvif.org/ver10/events/wsdl":    "events",
+		"http://www.onvif.org/ver10/media/wsdl":     "media",
+		"http://www.onvif.org/ver20/media/wsdl":     "media2",
+		"http://www.onvif.org/ver20/ptz/wsdl":       "ptz",
+		"http://www.onvif.org/ver20/analytics/wsdl": "analytics",
+		"http://www.onvif.org/ver10/schema":         "",
+		"":                                          "",
+	}
+	for namespace, want := range cases {
+		assert.Equal(t, want, endpointKeyFromNamespace(namespace), namespace)
+	}
+}
+
+// Some devices list DeviceIO only through GetServices. Those endpoints must be
+// registered (with the host rewritten to Xaddr) without overriding endpoints
+// already learned from GetCapabilities.
+func TestDevice_AddServicesFromResponse(t *testing.T) {
+	dev := Device{
+		params:    DeviceParams{Xaddr: "127.0.0.1:8080"},
+		endpoints: map[string]string{"events": "http://127.0.0.1:8080/onvif/events_from_capabilities"},
+	}
+	response := `<?xml version="1.0" encoding="UTF-8"?>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl">
+<SOAP-ENV:Body><tds:GetServicesResponse>
+<tds:Service><tds:Namespace>http://www.onvif.org/ver10/events/wsdl</tds:Namespace><tds:XAddr>http://10.0.0.5:80/onvif/event_service</tds:XAddr></tds:Service>
+<tds:Service><tds:Namespace>http://www.onvif.org/ver10/deviceio/wsdl</tds:Namespace><tds:XAddr>http://10.0.0.5:80/onvif/deviceio_service</tds:XAddr></tds:Service>
+</tds:GetServicesResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>`
+
+	dev.addServicesFromResponse([]byte(response))
+
+	endpoint, err := dev.getEndpoint("deviceio")
+	require.NoError(t, err)
+	assert.Equal(t, "http://127.0.0.1:8080/onvif/deviceio_service", endpoint)
+	assert.Equal(t, "http://127.0.0.1:8080/onvif/events_from_capabilities", dev.endpoints["events"],
+		"GetCapabilities endpoints must not be overridden")
+}
+
+// DeviceIO requests use the tmd prefix, which must be declared on the
+// envelope or the request is not well-formed XML.
+func TestDevice_CallMethod_DeclaresDeviceIONamespace(t *testing.T) {
+	var captured string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		captured = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	dev := Device{
+		params:    DeviceParams{HttpClient: srv.Client()},
+		endpoints: map[string]string{"deviceio": srv.URL + "/onvif/deviceio_service"},
+	}
+	resp, err := dev.CallMethod(deviceio.GetDigitalInputs{})
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Contains(t, captured, "<tmd:GetDigitalInputs")
+	assert.Contains(t, captured, `xmlns:tmd="http://www.onvif.org/ver10/deviceIO/wsdl"`)
 }

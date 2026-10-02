@@ -278,8 +278,8 @@ type RenewResponse struct { //http://docs.oasis-open.org/wsn/b-2.xsd
 
 // Unsubscribe action for Unsubscribe event topic
 type Unsubscribe struct { //http://docs.oasis-open.org/wsn/b-2.xsd
-	XMLName string `xml:"tev:Unsubscribe"`
-	Any     string
+	XMLName string `xml:"wsnt:Unsubscribe"`
+	Any     string `xml:",innerxml"`
 }
 
 // UnsubscribeResponse message for Unsubscribe event topic

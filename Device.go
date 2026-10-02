@@ -28,6 +28,7 @@ var Xlmns = map[string]string{
 	"trt":     "http://www.onvif.org/ver10/media/wsdl",
 	"tr2":     "http://www.onvif.org/ver20/media/wsdl",
 	"tev":     "http://www.onvif.org/ver10/events/wsdl",
+	"tmd":     "http://www.onvif.org/ver10/deviceIO/wsdl",
 	"tptz":    "http://www.onvif.org/ver20/ptz/wsdl",
 	"timg":    "http://www.onvif.org/ver20/imaging/wsdl",
 	"tan":     "http://www.onvif.org/ver20/analytics/wsdl",
@@ -189,7 +190,69 @@ func NewDevice(params DeviceParams) (*Device, error) {
 	}
 
 	dev.getSupportedServices(resp)
+	dev.addServicesFromGetServices()
 	return dev, nil
+}
+
+// addServicesFromGetServices registers the endpoints a device lists through
+// GetServices but not through GetCapabilities. Some devices only advertise
+// services such as DeviceIO this way, which would otherwise leave calls like
+// deviceio.GetDigitalInputs without an endpoint. Endpoints already known from
+// GetCapabilities are kept, and failures are ignored because GetServices is
+// optional for older devices.
+func (dev *Device) addServicesFromGetServices() {
+	resp, err := dev.CallMethod(device.GetServices{IncludeCapability: false})
+	if err != nil || resp == nil {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+	dev.addServicesFromResponse(data)
+}
+
+func (dev *Device) addServicesFromResponse(data []byte) {
+	doc := etree.NewDocument()
+	if err := doc.ReadFromBytes(data); err != nil {
+		return
+	}
+	for _, service := range doc.FindElements("./Envelope/Body/GetServicesResponse/Service") {
+		namespace := service.SelectElement("Namespace")
+		xaddr := service.SelectElement("XAddr")
+		if namespace == nil || xaddr == nil {
+			continue
+		}
+		key := endpointKeyFromNamespace(namespace.Text())
+		if key == "" || strings.TrimSpace(xaddr.Text()) == "" {
+			continue
+		}
+		if _, exists := dev.endpoints[key]; exists {
+			continue
+		}
+		dev.addEndpoint(key, strings.TrimSpace(xaddr.Text()))
+	}
+}
+
+// endpointKeyFromNamespace maps a GetServices namespace such as
+// "http://www.onvif.org/ver10/deviceIO/wsdl" onto the endpoint key used by
+// CallMethod, which is the lowercased name of the request's package
+// ("deviceio"). The ver20 media service maps to "media2".
+func endpointKeyFromNamespace(namespace string) string {
+	parts := strings.Split(strings.Trim(strings.TrimSpace(namespace), "/"), "/")
+	if len(parts) < 3 || !strings.EqualFold(parts[len(parts)-1], "wsdl") {
+		return ""
+	}
+	key := strings.ToLower(parts[len(parts)-2])
+	if key == "media" && strings.EqualFold(parts[len(parts)-3], "ver20") {
+		return strings.ToLower(Media2WebService)
+	}
+	return key
 }
 
 func (dev *Device) addEndpoint(Key, Value string) {

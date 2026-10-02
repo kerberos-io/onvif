@@ -90,3 +90,16 @@ func TestRenewFunction_Response(t *testing.T) {
 	assert.Equal(t, xsd.String("2023-11-25T18:08:15Z"), *res.TerminationTime)
 	assert.Equal(t, xsd.String("2023-11-24T14:50:25Z"), *res.CurrentTime)
 }
+
+// Unsubscribe belongs to the WS-BaseNotification namespace (wsnt), not the
+// ONVIF events namespace. Devices reject tev:Unsubscribe with
+// ActionNotSupported.
+func TestUnsubscribeMarshalsAsWSBaseNotification(t *testing.T) {
+	body, err := xml.Marshal(Unsubscribe{})
+	if err != nil {
+		t.Fatalf("xml.Marshal(Unsubscribe{}) error = %v", err)
+	}
+	if got, want := string(body), "<wsnt:Unsubscribe></wsnt:Unsubscribe>"; got != want {
+		t.Fatalf("xml.Marshal(Unsubscribe{}) = %s, want %s", got, want)
+	}
+}
