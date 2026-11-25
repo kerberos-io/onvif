@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beevik/etree"
+	"github.com/kerberos-io/onvif/gosoap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -328,13 +330,13 @@ func TestPullMessages_EchoesRefParamsWithIsReferenceParameterAttribute(t *testin
 		"WS-Addressing 1.0 SOAP Binding §3.4 requires the attribute on each echoed element")
 }
 
-func TestPullMessages_NoRefParams_HeaderEmpty(t *testing.T) {
+func TestPullMessages_NoRefParams_NoReferenceParameterEchoed(t *testing.T) {
 	ref := subscriptionRef{Address: "http://camera/sub", RefParamsXML: ""}
 	fc := newFakeCaller()
 	_, err := pullMessages(fc, ref, defaultOptions())
 	require.NoError(t, err)
 	require.Len(t, fc.sendSoapHeaders, 1)
-	assert.Empty(t, fc.sendSoapHeaders[0], "vendors without ref params get no extra header")
+	assert.NotContains(t, fc.sendSoapHeaders[0], "IsReferenceParameter", "vendors without ref params get none echoed")
 }
 
 func TestPullMessages_PostsToAddressFromRef(t *testing.T) {
@@ -716,6 +718,143 @@ func TestBuildRefParamsHeader_RejectsNonReferenceParametersRoot_Table(t *testing
 		t.Run(c.name, func(t *testing.T) {
 			_, err := buildRefParamsHeader(c.raw)
 			require.Error(t, err)
+		})
+	}
+}
+
+// --- WS-Addressing Action and To --------------------------------------
+
+// Some devices identify the subscription from wsa:To rather than the
+// request URL, and reject PullMessages and Unsubscribe without it as
+// NotAuthorized. Echoing ref params alone does not satisfy them.
+
+// Pinned as literals rather than reusing the production constants, so a
+// typo in an action URI fails here instead of passing on both sides.
+const (
+	wantPullMessagesAction = "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest"
+	wantRenewAction        = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest"
+	wantUnsubscribeAction  = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest"
+)
+
+type subscriptionRequest struct {
+	name   string
+	action string
+	send   func(c caller, ref subscriptionRef) error
+}
+
+func subscriptionRequests() []subscriptionRequest {
+	return []subscriptionRequest{
+		{"PullMessages", wantPullMessagesAction, func(c caller, ref subscriptionRef) error {
+			_, err := pullMessages(c, ref, defaultOptions())
+			return err
+		}},
+		{"Renew", wantRenewAction, func(c caller, ref subscriptionRef) error {
+			_, err := renewPullPoint(c, ref, defaultOptions())
+			return err
+		}},
+		{"Unsubscribe", wantUnsubscribeAction, func(c caller, ref subscriptionRef) error {
+			return unsubscribePullPoint(c, ref)
+		}},
+	}
+}
+
+// headerElements parses captured header XML into its top-level
+// elements, failing the test if it is not well-formed.
+func headerElements(t *testing.T, headerXML string) []*etree.Element {
+	t.Helper()
+	doc := etree.NewDocument()
+	require.NoError(t, doc.ReadFromString("<wrap>"+headerXML+"</wrap>"), "header must be well-formed XML: %s", headerXML)
+	return doc.SelectElement("wrap").ChildElements()
+}
+
+func wsaHeaders(t *testing.T, headerXML, local string) []*etree.Element {
+	t.Helper()
+	var out []*etree.Element
+	for _, el := range headerElements(t, headerXML) {
+		if el.Tag == local && el.NamespaceURI() == "http://www.w3.org/2005/08/addressing" {
+			out = append(out, el)
+		}
+	}
+	return out
+}
+
+func TestSubscriptionRequests_SendWSAddressingActionAndTo(t *testing.T) {
+	for _, req := range subscriptionRequests() {
+		t.Run(req.name, func(t *testing.T) {
+			ref := subscriptionRef{Address: "http://camera/onvif/Subscription?Idx=7"}
+			fc := newFakeCaller()
+			require.NoError(t, req.send(fc, ref))
+			require.Len(t, fc.sendSoapHeaders, 1)
+			hdr := fc.sendSoapHeaders[0]
+
+			action := wsaHeaders(t, hdr, "Action")
+			require.Len(t, action, 1, "exactly one wsa:Action; got: %s", hdr)
+			assert.Equal(t, req.action, action[0].Text())
+
+			to := wsaHeaders(t, hdr, "To")
+			require.Len(t, to, 1, "exactly one wsa:To; got: %s", hdr)
+			assert.Equal(t, ref.Address, to[0].Text(), "wsa:To must name the subscription the request is posted to")
+		})
+	}
+}
+
+// Subscription addresses routinely carry query strings; an unescaped
+// '&' makes the whole envelope malformed and the request is never sent.
+func TestSubscriptionRequests_EscapeAddressInTo(t *testing.T) {
+	for _, req := range subscriptionRequests() {
+		t.Run(req.name, func(t *testing.T) {
+			ref := subscriptionRef{Address: "http://camera/onvif/Subscription?Idx=7&Ch=<1>"}
+			fc := newFakeCaller()
+			require.NoError(t, req.send(fc, ref))
+			require.Len(t, fc.sendSoapHeaders, 1)
+
+			to := wsaHeaders(t, fc.sendSoapHeaders[0], "To")
+			require.Len(t, to, 1)
+			assert.Equal(t, ref.Address, to[0].Text(), "address must round-trip through escaping unchanged")
+		})
+	}
+}
+
+func TestSubscriptionRequests_KeepRefParamsAlongsideAddressing(t *testing.T) {
+	for _, req := range subscriptionRequests() {
+		t.Run(req.name, func(t *testing.T) {
+			ref := subscriptionRef{
+				Address:      "http://192.168.1.10/onvif/services",
+				RefParamsXML: `<wsa:ReferenceParameters xmlns:wsa="http://www.w3.org/2005/08/addressing"><dom0:SubscriptionId xmlns:dom0="http://www.axis.com/2009/event">297</dom0:SubscriptionId></wsa:ReferenceParameters>`,
+			}
+			fc := newFakeCaller()
+			require.NoError(t, req.send(fc, ref))
+			require.Len(t, fc.sendSoapHeaders, 1)
+			hdr := fc.sendSoapHeaders[0]
+
+			assert.Len(t, wsaHeaders(t, hdr, "Action"), 1)
+			assert.Len(t, wsaHeaders(t, hdr, "To"), 1)
+			var refParam *etree.Element
+			for _, el := range headerElements(t, hdr) {
+				if el.Tag == "SubscriptionId" {
+					refParam = el
+				}
+			}
+			require.NotNil(t, refParam, "ref param must still be echoed; got: %s", hdr)
+			assert.Equal(t, "297", refParam.Text())
+			assert.Equal(t, "true", refParam.SelectAttrValue("wsa:IsReferenceParameter", ""))
+		})
+	}
+}
+
+// The header is spliced into the envelope by gosoap; it must survive
+// that path standalone, without relying on prefixes the envelope
+// happens to declare.
+func TestSubscriptionRequests_HeaderAcceptedByEnvelopeBuilder(t *testing.T) {
+	for _, req := range subscriptionRequests() {
+		t.Run(req.name, func(t *testing.T) {
+			fc := newFakeCaller()
+			require.NoError(t, req.send(fc, subscriptionRef{Address: "http://camera/sub"}))
+			require.Len(t, fc.sendSoapHeaders, 1)
+
+			msg := gosoap.NewEmptySOAP()
+			require.NoError(t, msg.AddStringHeaderContents(fc.sendSoapHeaders[0]))
+			assert.Contains(t, msg.String(), "http://camera/sub")
 		})
 	}
 }

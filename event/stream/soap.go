@@ -97,9 +97,9 @@ func pullMessages(c caller, ref subscriptionRef, opts Options) ([]event.Notifica
 	if err != nil {
 		return nil, fmt.Errorf("marshal PullMessages: %w", err)
 	}
-	headerXML, err := buildRefParamsHeader(ref.RefParamsXML)
+	headerXML, err := subscriptionHeader(ref, pullMessagesAction)
 	if err != nil {
-		return nil, fmt.Errorf("build ref params header: %w", err)
+		return nil, fmt.Errorf("build subscription header: %w", err)
 	}
 	resp, err := c.SendSoapWithHeader(ref.Address, string(body), headerXML)
 	if err != nil {
@@ -126,9 +126,9 @@ func unsubscribePullPoint(c caller, ref subscriptionRef) error {
 	if err != nil {
 		return fmt.Errorf("marshal Unsubscribe: %w", err)
 	}
-	headerXML, err := buildRefParamsHeader(ref.RefParamsXML)
+	headerXML, err := subscriptionHeader(ref, unsubscribeAction)
 	if err != nil {
-		return fmt.Errorf("build ref params header: %w", err)
+		return fmt.Errorf("build subscription header: %w", err)
 	}
 	resp, err := c.SendSoapWithHeader(ref.Address, string(body), headerXML)
 	if err != nil {
@@ -234,6 +234,33 @@ var (
 	subscriptionRefRE = regexp.MustCompile(`(?s)<(?:[^:>\s]+:)?SubscriptionReference\b[^>]*>(.*?)</(?:[^:>\s]+:)?SubscriptionReference>`)
 	refParamsRE       = regexp.MustCompile(`(?s)<(?:[^:>\s]+:)?ReferenceParameters\b[^>]*>(.*?)</(?:[^:>\s]+:)?ReferenceParameters>`)
 )
+
+const (
+	wsaNamespace       = "http://www.w3.org/2005/08/addressing"
+	pullMessagesAction = "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest"
+	renewAction        = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest"
+	unsubscribeAction  = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest"
+)
+
+// subscriptionHeader builds the SOAP <Header> inner XML for a request
+// sent to the subscription: wsa:Action and wsa:To, followed by the
+// echoed reference parameters. Some devices identify the subscription
+// from wsa:To rather than the request URL, and reject requests without
+// it as NotAuthorized. Each element declares the wsa namespace itself
+// so the header does not depend on the envelope's prefixes.
+func subscriptionHeader(ref subscriptionRef, action string) (string, error) {
+	refParams, err := buildRefParamsHeader(ref.RefParamsXML)
+	if err != nil {
+		return "", fmt.Errorf("build ref params header: %w", err)
+	}
+	var to bytes.Buffer
+	if err := xml.EscapeText(&to, []byte(ref.Address)); err != nil {
+		return "", fmt.Errorf("escape subscription address: %w", err)
+	}
+	return `<wsa:Action xmlns:wsa="` + wsaNamespace + `">` + action + `</wsa:Action>` +
+		`<wsa:To xmlns:wsa="` + wsaNamespace + `">` + to.String() + `</wsa:To>` +
+		refParams, nil
+}
 
 // buildRefParamsHeader produces the SOAP <Header> inner XML from the
 // full <*:ReferenceParameters> element returned by
