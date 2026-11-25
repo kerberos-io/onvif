@@ -81,9 +81,9 @@ func renewPullPoint(c caller, ref subscriptionRef, opts Options) (time.Time, err
 	if err != nil {
 		return time.Time{}, fmt.Errorf("marshal Renew: %w", err)
 	}
-	headerXML, err := buildRefParamsHeader(ref.RefParamsXML)
+	headerXML, err := subscriptionHeader(ref, renewAction)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("build ref params header: %w", err)
+		return time.Time{}, fmt.Errorf("build subscription header: %w", err)
 	}
 	resp, err := c.SendSoapWithHeader(ref.Address, string(body), headerXML)
 	if err != nil {
