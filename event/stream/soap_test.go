@@ -5,12 +5,14 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/beevik/etree"
-	"github.com/kerberos-io/onvif/gosoap"
+	"github.com/kerberos-io/onvif"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -336,7 +338,10 @@ func TestPullMessages_NoRefParams_NoReferenceParameterEchoed(t *testing.T) {
 	_, err := pullMessages(fc, ref, defaultOptions())
 	require.NoError(t, err)
 	require.Len(t, fc.sendSoapHeaders, 1)
-	assert.NotContains(t, fc.sendSoapHeaders[0], "IsReferenceParameter", "vendors without ref params get none echoed")
+	for _, el := range headerElements(t, fc.sendSoapHeaders[0]) {
+		assert.Equal(t, "http://www.w3.org/2005/08/addressing", el.NamespaceURI(),
+			"only wsa:Action and wsa:To expected without ref params, got <%s>", el.FullTag())
+	}
 }
 
 func TestPullMessages_PostsToAddressFromRef(t *testing.T) {
@@ -827,8 +832,6 @@ func TestSubscriptionRequests_KeepRefParamsAlongsideAddressing(t *testing.T) {
 			require.Len(t, fc.sendSoapHeaders, 1)
 			hdr := fc.sendSoapHeaders[0]
 
-			assert.Len(t, wsaHeaders(t, hdr, "Action"), 1)
-			assert.Len(t, wsaHeaders(t, hdr, "To"), 1)
 			var refParam *etree.Element
 			for _, el := range headerElements(t, hdr) {
 				if el.Tag == "SubscriptionId" {
@@ -842,19 +845,82 @@ func TestSubscriptionRequests_KeepRefParamsAlongsideAddressing(t *testing.T) {
 	}
 }
 
-// The header is spliced into the envelope by gosoap; it must survive
-// that path standalone, without relying on prefixes the envelope
-// happens to declare.
-func TestSubscriptionRequests_HeaderAcceptedByEnvelopeBuilder(t *testing.T) {
-	for _, req := range subscriptionRequests() {
-		t.Run(req.name, func(t *testing.T) {
-			fc := newFakeCaller()
-			require.NoError(t, req.send(fc, subscriptionRef{Address: "http://camera/sub"}))
-			require.Len(t, fc.sendSoapHeaders, 1)
+// End-to-end through Device.SendSoapWithHeader and gosoap, which the
+// fakeCaller tests bypass: the envelope builder must not drop or
+// duplicate the headers, and the digest retry must resend them.
+func TestSubscriptionRequests_OnTheWireCarryOneActionAndTo(t *testing.T) {
+	for _, challenge := range []bool{false, true} {
+		for _, req := range subscriptionRequests() {
+			name := req.name
+			if challenge {
+				name += "/after_digest_challenge"
+			}
+			t.Run(name, func(t *testing.T) {
+				body := sendThroughDevice(t, req, challenge)
 
-			msg := gosoap.NewEmptySOAP()
-			require.NoError(t, msg.AddStringHeaderContents(fc.sendSoapHeaders[0]))
-			assert.Contains(t, msg.String(), "http://camera/sub")
-		})
+				doc := etree.NewDocument()
+				require.NoError(t, doc.ReadFromString(body), "envelope must be well-formed: %s", body)
+				header := doc.Root().SelectElement("Header")
+				require.NotNil(t, header, "envelope must carry a Header: %s", body)
+
+				var actions, tos []*etree.Element
+				for _, el := range header.ChildElements() {
+					if el.NamespaceURI() != "http://www.w3.org/2005/08/addressing" {
+						continue
+					}
+					switch el.Tag {
+					case "Action":
+						actions = append(actions, el)
+					case "To":
+						tos = append(tos, el)
+					}
+				}
+				require.Len(t, actions, 1, "exactly one wsa:Action in the sent envelope: %s", body)
+				assert.Equal(t, req.action, actions[0].Text())
+				require.Len(t, tos, 1, "exactly one wsa:To in the sent envelope: %s", body)
+				assert.True(t, strings.HasSuffix(tos[0].Text(), "/sub?a=1&b=2"), "wsa:To = %q", tos[0].Text())
+			})
+		}
 	}
+}
+
+// sendThroughDevice sends req via a real Device to an httptest camera
+// and returns the envelope of the request that reached the
+// subscription. With challenge set, the camera rejects every request
+// without an Authorization header, so only the digest retry is captured.
+func sendThroughDevice(t *testing.T, req subscriptionRequest, challenge bool) string {
+	t.Helper()
+	var mu sync.Mutex
+	var captured string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sub" {
+			w.WriteHeader(http.StatusOK) // GetCapabilities / GetServices at construction
+			return
+		}
+		if challenge && r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Digest realm="onvif", nonce="abc", qop="auth"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		captured = string(b)
+		mu.Unlock()
+		_, _ = io.WriteString(w, pullMessagesResp())
+	}))
+	t.Cleanup(srv.Close)
+
+	dev, err := onvif.NewDevice(onvif.DeviceParams{
+		Xaddr:      strings.TrimPrefix(srv.URL, "http://"),
+		Username:   "admin",
+		Password:   "secret",
+		HttpClient: srv.Client(),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, req.send(deviceCaller{dev: dev}, subscriptionRef{Address: srv.URL + "/sub?a=1&b=2"}))
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, captured, "request never reached the subscription endpoint")
+	return captured
 }
