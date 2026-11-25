@@ -10,13 +10,13 @@ import (
 	"github.com/kerberos-io/onvif"
 )
 
-// closeDrainTimeout bounds Close's wait for the pull and renew
-// goroutines to exit. The loops block in caller.SendSoap which is not
+// closeDrainSlack is how far the default drain bound sits above
+// PullTimeout. The loops block in caller.SendSoap which is not
 // ctx-aware (the underlying http.Client is the only thing that can
-// unblock them — see caller below). On a hung HTTP transport Close
-// would otherwise wait forever; instead it returns an error and lets
-// the calling agent move on.
-const closeDrainTimeout = 5 * time.Second
+// unblock them — see caller below), so a drain shorter than a pull
+// times out on every shutdown that lands mid-poll and skips the
+// Unsubscribe below it.
+const closeDrainSlack = 10 * time.Second
 
 // closeUnsubscribeTimeout bounds the Unsubscribe SOAP call issued by
 // Close. A subscription expires at the camera once InitialTermination
@@ -66,6 +66,13 @@ type Options struct {
 	RetryBackoff time.Duration
 	// BufferSize — zero means default (16); use -1 for unbuffered.
 	BufferSize int
+	// CloseDrainTimeout bounds Close's wait for the pull and renew
+	// loops to exit. Zero derives it from whichever is longer, the
+	// resolved PullTimeout or the device's http.Client.Timeout, plus
+	// closeDrainSlack — so it outlasts any call those loops can be
+	// parked in. Only NewStream can see the client ceiling; callers
+	// reaching newStream directly get the PullTimeout-only bound.
+	CloseDrainTimeout time.Duration
 }
 
 func defaultOptions() Options {
@@ -109,6 +116,12 @@ func (o Options) withDefaults() Options {
 	d.DeviceID = o.DeviceID
 	d.RawTopicFilter = o.RawTopicFilter
 	d.DisableReconnect = o.DisableReconnect
+	// Derived last: it depends on the resolved PullTimeout.
+	if o.CloseDrainTimeout > 0 {
+		d.CloseDrainTimeout = o.CloseDrainTimeout
+	} else {
+		d.CloseDrainTimeout = d.PullTimeout + closeDrainSlack
+	}
 	return d
 }
 
@@ -137,7 +150,7 @@ type subscriptionRef struct {
 //   - Enforce a per-request timeout via the underlying HTTP client.
 //     The methods do not take a ctx, so ctx-cancel cannot interrupt a
 //     hung request; only the HTTP client's own timeout can. Close
-//     bounds its drain wait at closeDrainTimeout to survive a misbehaving
+//     bounds its drain wait at Options.CloseDrainTimeout to survive a misbehaving
 //     caller, but a leaking goroutine remains until the HTTP call
 //     eventually returns.
 type caller interface {
@@ -242,7 +255,25 @@ func NewStream(ctx context.Context, dev *onvif.Device, opts Options) (*Stream, e
 	if err := validateClientTimeout(clientTimeoutOf(dev), opts.withDefaults().PullTimeout); err != nil {
 		return nil, err
 	}
+	// Derived here rather than in withDefaults because only this entry
+	// point can see the device's HTTP ceiling.
+	if opts.CloseDrainTimeout == 0 {
+		opts.CloseDrainTimeout = drainFor(opts.withDefaults().PullTimeout, clientTimeoutOf(dev))
+	}
 	return newStream(ctx, deviceCaller{dev: dev}, opts)
+}
+
+// drainFor bounds Close's wait by the longest a SOAP call can run.
+// PullTimeout is how long the camera holds a poll, but the client
+// ceiling is what caps the call and callers set it higher. A zero
+// ceiling means unbounded, where no finite drain helps, so the poll
+// stays the best available bound.
+func drainFor(pullTimeout, clientTimeout time.Duration) time.Duration {
+	longest := pullTimeout
+	if clientTimeout > longest {
+		longest = clientTimeout
+	}
+	return longest + closeDrainSlack
 }
 
 func newStream(ctx context.Context, c caller, opts Options) (*Stream, error) {
@@ -275,7 +306,7 @@ func (s *Stream) Events() <-chan Event { return s.events }
 // when the Stream stops.
 func (s *Stream) Errors() <-chan error { return s.errors }
 
-// Close stops the background goroutines, waits up to closeDrainTimeout
+// Close stops the background goroutines, waits up to Options.CloseDrainTimeout
 // for them to exit, and then Unsubscribes from the camera (also bounded,
 // by closeUnsubscribeTimeout). Subsequent calls are no-ops.
 //
@@ -289,8 +320,8 @@ func (s *Stream) Close() error {
 
 		select {
 		case <-s.done:
-		case <-time.After(closeDrainTimeout):
-			s.closeErr = fmt.Errorf("close: pull/renew loops did not drain within %s (likely stuck in caller HTTP)", closeDrainTimeout)
+		case <-time.After(s.opts.CloseDrainTimeout):
+			s.closeErr = fmt.Errorf("close: pull/renew loops did not drain within %s (likely stuck in caller HTTP)", s.opts.CloseDrainTimeout)
 			return
 		}
 
